@@ -1336,15 +1336,15 @@ async function fetchAndRenderDaily(){
 // ════════════════════════════════════════════════
 async function fetchAndRenderYTD(){
   const el=document.getElementById('ytdContent');
-  const JAN2_KEY='taiex_jan2_2026';
-  let taiexJan2=parseFloat(localStorage.getItem(JAN2_KEY)||'');
+  const BASE_KEY='taiex_dec31_2025';
+  let taiexBase=parseFloat(localStorage.getItem(BASE_KEY)||'');
   const [taiexNowRaw]=await Promise.all([
     fetchTAIEXFromHistory(todayStr()),
-    (async()=>{if(isNaN(taiexJan2)||taiexJan2<=0){const v=await fetchTAIEXFromHistory('20260102');if(v){taiexJan2=v;localStorage.setItem(JAN2_KEY,String(v));}}})()
+    (async()=>{if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}})()
   ]);
   let taiexNow=taiexNowRaw;
   if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
-  const taiexYTD=(taiexNow&&taiexJan2>0)?(taiexNow-taiexJan2)/taiexJan2*100:null;
+  const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:null;
   const realizedPnl=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
   const totalCost=positions.reduce((s,p)=>s+calc(p).cost,0);
   const unrealizedPnl=positions.reduce((s,p)=>s+calc(p).pnl,0);
@@ -1361,7 +1361,7 @@ async function fetchAndRenderYTD(){
   }
   const diff=taiexYTD!==null&&portYTD!==null?portYTD-taiexYTD:null;
   el.innerHTML=
-    ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2026/1/2 收盤至今')+
+    ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2025/12/31 收盤為基準')+
     ytdBlock('持倉整體 YTD',portYTD,'(未實現+已實現損益) / 總投入成本')+
     (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
       相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
