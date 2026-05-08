@@ -226,16 +226,17 @@
              onmouseover="this.style.borderColor='#94a3b8'" onmouseout="this.style.borderColor='var(--border)'">
           <div style="font-size:32px;margin-bottom:10px;">📄</div>
           <div style="font-weight:500;margin-bottom:4px;">點擊選擇 CSV 檔案</div>
-          <div style="font-size:12px;color:var(--muted);">支援國泰「證券未實現彙總」匯出格式</div>
+          <div style="font-size:12px;color:var(--muted);">支援國泰「未實現彙總」或「未實現明細」匯出格式</div>
         </div>
         <input type="file" id="csvInput" accept=".csv,.txt" style="display:none" onchange="handleCSVFile(this)">
         <div style="margin-top:12px;padding:10px 14px;background:var(--hover-bg);border-radius:6px;
                     font-size:12px;color:var(--muted);line-height:1.7;">
-          國泰網銀 → 帳戶查詢 → 損益查詢 → 未實現損益彙總 → 匯出CSV
+          <strong>彙總</strong>：帳戶查詢 → 損益查詢 → 未實現損益彙總 → 匯出CSV<br>
+          <strong>明細</strong>：帳戶查詢 → 損益查詢 → 未實現損益明細 → 匯出CSV（自動建立交易紀錄）
         </div>
       </div>
       <div id="importStep2" style="display:none;">
-        <div style="font-size:13px;color:var(--muted);margin-bottom:14px;">
+        <div id="importStep2Hint" style="font-size:13px;color:var(--muted);margin-bottom:14px;">
           確認代號及類型。同一股票不同成本請匯入後使用「拆分」功能。
         </div>
         <div style="overflow-x:auto;max-height:380px;overflow-y:auto;">
@@ -441,7 +442,8 @@ let currentTab = 'all';
 let editingId  = null;
 let splitId    = null;
 let splitSubRows = [];
-let importRows   = [];
+let importRows     = [];
+let importIsDetail = false;
 let txTargetId   = null;  // position id for current transaction modal
 let allocChart   = null;
 let instCache    = null;
@@ -535,6 +537,37 @@ function parseKGI(text) {
                 type: getTypePref(name)||'長期' });
   }
   return rows;
+}
+
+function parseKGIDetail(text) {
+  const groups = {};
+  for (const line of text.trim().split(/\r?\n/).slice(1)) {
+    const f = parseCSVLine(line.trim());
+    if (f.length < 11) continue;
+    const name = f[0].trim();
+    if (!name || name.startsWith('總') || name.startsWith('合計')) continue;
+    const shares = parseInt(f[1].replace(/,/g,''));
+    const price  = parseFloat(f[4].replace(/,/g,''));
+    const mktP   = parseFloat(f[5].replace(/,/g,''));
+    const date   = f[10].trim().replace(/\//g, '-');
+    const note   = (f[11]||'').trim();
+    if (isNaN(shares)||isNaN(price)||shares<=0) continue;
+    if (!groups[name]) groups[name] = { rows:[], latestPrice:null };
+    groups[name].rows.push({ shares, price, date, note });
+    if (!isNaN(mktP)&&mktP>0) groups[name].latestPrice = mktP;
+  }
+  return Object.entries(groups).map(([name, g]) => {
+    const totalShares = g.rows.reduce((s,r)=>s+r.shares, 0);
+    const totalCost   = g.rows.reduce((s,r)=>s+r.shares*r.price, 0);
+    const avgCost     = totalCost / totalShares;
+    const transactions = g.rows
+      .map(r => ({ id:uid(), date:r.date, action:'buy', shares:r.shares, price:r.price, note:r.note }))
+      .sort((a,b) => a.date<b.date?-1:1);
+    const lookup = CODE_MAP[name]||{};
+    return { stockName:name, stockCode:lookup.code||'', market:lookup.market||'tse',
+             shares:totalShares, avgCost, csvPrice:g.latestPrice,
+             type:getTypePref(name)||'長期', transactions };
+  });
 }
 
 // ════════════════════════════════════════════════
@@ -858,20 +891,39 @@ function showImportStep1() {
 function handleCSVFile(input) {
   const file=input.files[0]; if (!file) return;
   const reader=new FileReader();
-  reader.onload=e=>{ importRows=parseKGI(e.target.result); showImportStep2(); };
+  reader.onload=e=>{
+    const text=e.target.result;
+    const firstLine=text.split(/\r?\n/)[0]||'';
+    importIsDetail = firstLine.includes('成交日期');
+    importRows = importIsDetail ? parseKGIDetail(text) : parseKGI(text);
+    showImportStep2();
+  };
   reader.readAsText(file,'UTF-8');
 }
 function showImportStep2() {
   document.getElementById('importStep1').style.display='none';
   document.getElementById('importStep2').style.display='block';
+  document.getElementById('importStep2Hint').textContent = importIsDetail
+    ? '已偵測到明細格式，每筆買入紀錄將自動建立交易記錄。確認代號及類型後匯入。'
+    : '確認代號及類型。同一股票不同成本請匯入後使用「拆分」功能。';
   renderImportTable();
 }
 function renderImportTable() {
-  document.getElementById('importTableBody').innerHTML = importRows.map((r,i)=>`
-    <tr>
-      <td style="text-align:left;font-weight:500;">${r.stockName}</td>
-      <td>${r.shares.toLocaleString()}</td>
-      <td>${fmtD(r.avgCost)}</td>
+  const thead = document.querySelector('#importModal thead tr');
+  if (importIsDetail) {
+    thead.innerHTML = `
+      <th style="text-align:left;">股票名稱</th>
+      <th>股數</th><th>加權均價</th><th>交易筆數</th><th>日期範圍</th>
+      <th>股票代號</th><th>市場</th><th>類型</th><th></th>`;
+  } else {
+    thead.innerHTML = `
+      <th style="text-align:left;">股票名稱</th>
+      <th>股數</th><th>成本均價</th>
+      <th>股票代號</th><th>市場</th><th>類型</th><th></th>`;
+  }
+
+  document.getElementById('importTableBody').innerHTML = importRows.map((r,i)=>{
+    const base = `
       <td><input type="text" value="${r.stockCode}" id="imp-code-${i}" placeholder="代號" style="width:72px;"></td>
       <td><select id="imp-mkt-${i}" style="width:64px;">
         <option value="tse" ${r.market==='tse'?'selected':''}>上市</option>
@@ -881,8 +933,27 @@ function renderImportTable() {
         <option value="長期" ${r.type==='長期'?'selected':''}>長期</option>
         <option value="短期" ${r.type==='短期'?'selected':''}>短期</option>
       </select></td>
-      <td><button class="btn btn-danger btn-sm" onclick="importRows.splice(${i},1);renderImportTable()">移除</button></td>
-    </tr>`).join('');
+      <td><button class="btn btn-danger btn-sm" onclick="importRows.splice(${i},1);renderImportTable()">移除</button></td>`;
+    if (importIsDetail) {
+      const txs = r.transactions||[];
+      const dateRange = txs.length
+        ? (txs[0].date===txs[txs.length-1].date ? txs[0].date : `${txs[0].date} ~ ${txs[txs.length-1].date}`)
+        : '—';
+      return `<tr>
+        <td style="text-align:left;font-weight:500;">${r.stockName}</td>
+        <td>${r.shares.toLocaleString()}</td>
+        <td>${fmtD(r.avgCost)}</td>
+        <td style="color:var(--muted);">${txs.length} 筆</td>
+        <td style="color:var(--muted);font-size:12px;white-space:nowrap;">${dateRange}</td>
+        ${base}</tr>`;
+    } else {
+      return `<tr>
+        <td style="text-align:left;font-weight:500;">${r.stockName}</td>
+        <td>${r.shares.toLocaleString()}</td>
+        <td>${fmtD(r.avgCost)}</td>
+        ${base}</tr>`;
+    }
+  }).join('');
 }
 function confirmImport() {
   const newPos=importRows.map((r,i)=>({
@@ -890,7 +961,7 @@ function confirmImport() {
     stockName:r.stockName, market:document.getElementById(`imp-mkt-${i}`).value,
     type:document.getElementById(`imp-type-${i}`).value,
     shares:r.shares, avgCost:r.avgCost, currentPrice:r.csvPrice, notes:'',
-    transactions:[],
+    transactions: importIsDetail ? (r.transactions||[]) : [],
   }));
   newPos.forEach(p=>{
     saveTypePref(p.stockName,p.type);
