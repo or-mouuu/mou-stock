@@ -153,7 +153,15 @@
 
     <!-- Card 3: YTD performance -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
-      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">年初至今（YTD）</div>
+      <div style="display:flex;align-items:center;margin-bottom:10px;flex-shrink:0;">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">年初至今（YTD）</div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:5px;">
+          <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益</span>
+          <input id="realizedPnlInput" type="number" placeholder="0"
+            style="width:80px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+            oninput="localStorage.setItem('realized_pnl_v1',this.value||'0');fetchAndRenderYTD()">
+        </div>
+      </div>
       <div id="ytdContent" style="flex:1;overflow-y:auto;min-height:0;">
         <div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>
       </div>
@@ -1333,30 +1341,6 @@ async function fetchAndRenderDaily(){
 // ════════════════════════════════════════════════
 // CARD 3 — YTD PERFORMANCE
 // ════════════════════════════════════════════════
-async function fetchJan2Price(code,market){
-  const key=`jan2p_${code}`;
-  const cached=localStorage.getItem(key);
-  if(cached){const v=parseFloat(cached);if(!isNaN(v)&&v>0) return v;}
-  let price=null;
-  if(market==='otc'){
-    const url=`https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=115/01/01&stkno=${code}`;
-    const d=await fetchWithProxy(url);
-    if(d?.aaData?.length){
-      const row=d.aaData[0];
-      price=parseFloat((row[6]||'').replace(/,/g,''));
-    }
-  } else {
-    const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=20260102&stockNo=${code}`;
-    const d=await fetchWithProxy(url);
-    if(d?.stat==='OK'&&d.data?.length){
-      const row=d.data[0];
-      price=parseFloat((row[6]||'').replace(/,/g,''));
-    }
-  }
-  if(!isNaN(price)&&price>0){localStorage.setItem(key,String(price));return price;}
-  return null;
-}
-
 async function fetchAndRenderYTD(){
   const el=document.getElementById('ytdContent');
   const JAN2_KEY='taiex_jan2_2026';
@@ -1368,17 +1352,10 @@ async function fetchAndRenderYTD(){
   let taiexNow=taiexNowRaw;
   if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
   const taiexYTD=(taiexNow&&taiexJan2>0)?(taiexNow-taiexJan2)/taiexJan2*100:null;
-  let portYTD=null;
-  if(positions.length){
-    const jan2Prices=await Promise.all(positions.map(p=>p.stockCode?fetchJan2Price(p.stockCode,p.market):Promise.resolve(null)));
-    let jan2Val=0,curVal=0;
-    positions.forEach((p,i)=>{
-      const jp=jan2Prices[i];
-      const cp=prices[p.stockCode]?.price||calc(p).price;
-      if(jp&&cp&&p.shares>0){jan2Val+=p.shares*jp;curVal+=p.shares*cp;}
-    });
-    if(jan2Val>0) portYTD=(curVal-jan2Val)/jan2Val*100;
-  }
+  const realizedPnl=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
+  const totalCost=positions.reduce((s,p)=>s+calc(p).cost,0);
+  const unrealizedPnl=positions.reduce((s,p)=>s+calc(p).pnl,0);
+  const portYTD=totalCost>0?(unrealizedPnl+realizedPnl)/totalCost*100:null;
   function ytdBlock(label,val,note){
     if(val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
     const sign=val>=0?'+':'';
@@ -1392,7 +1369,7 @@ async function fetchAndRenderYTD(){
   const diff=taiexYTD!==null&&portYTD!==null?portYTD-taiexYTD:null;
   el.innerHTML=
     ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2026/1/2 收盤至今')+
-    ytdBlock('持倉整體 YTD',portYTD,'持股現值 vs 2026/1/2 收盤估算')+
+    ytdBlock('持倉整體 YTD',portYTD,'(未實現+已實現損益) / 總投入成本')+
     (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
       相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
     </div>`:'');
@@ -1405,6 +1382,8 @@ window.onload=()=>{
   loadState();
   render();
   setLastUpdated();
+  const savedRPnl=localStorage.getItem('realized_pnl_v1');
+  if(savedRPnl) document.getElementById('realizedPnlInput').value=savedRPnl;
   fetchAndRenderDaily();
   fetchAndRenderYTD();
 };
