@@ -86,16 +86,41 @@
     </div>
   </div>
 
-  <!-- CHARTS -->
-  <div style="display:grid;grid-template-columns:320px 1fr;gap:14px;margin-bottom:20px;">
-    <div class="card" style="padding:20px;">
-      <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;">持倉比例</div>
-      <div style="position:relative;height:260px;"><canvas id="allocChart"></canvas></div>
+  <!-- CHARTS + INSTITUTIONAL -->
+  <div style="display:grid;grid-template-columns:300px 1fr;gap:14px;margin-bottom:20px;">
+
+    <!-- Allocation doughnut -->
+    <div class="card" style="padding:20px;display:flex;flex-direction:column;">
+      <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;">資金水位</div>
+      <div style="position:relative;height:200px;"><canvas id="allocChart"></canvas></div>
+      <div id="allocLegend" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;"></div>
     </div>
+
+    <!-- Institutional data -->
     <div class="card" style="padding:20px;">
-      <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:14px;">各股未實現損益（元）</div>
-      <div style="position:relative;height:260px;"><canvas id="pnlChart"></canvas></div>
+      <div style="display:flex;align-items:center;margin-bottom:14px;">
+        <div style="font-size:12px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.05em;">法人籌碼</div>
+        <div id="instDate" style="font-size:11px;color:#475569;margin-left:8px;"></div>
+        <button id="instRefreshBtn" onclick="fetchAndRenderInstitutional()" style="margin-left:auto;background:#334155;border:none;color:#94a3b8;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">重新載入</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="instTable">
+          <thead>
+            <tr style="background:#0a1120;">
+              <th style="text-align:left;">股票</th>
+              <th>外資買賣超（張）</th>
+              <th>投信買賣超（張）</th>
+              <th>自營商買賣超（張）</th>
+              <th>三大法人（張）</th>
+            </tr>
+          </thead>
+          <tbody id="instTableBody">
+            <tr><td colspan="5" style="text-align:center;color:#475569;padding:20px;">載入中…</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
+
   </div>
 
   <!-- TABLE -->
@@ -334,6 +359,18 @@ function saveState() {
   localStorage.setItem(PRICES_KEY, JSON.stringify(prices));
 }
 
+// ── 長短期偏好記憶 ──
+const PREFS_KEY = 'stock_type_prefs_v1';
+function saveTypePref(stockName, type) {
+  const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+  p[stockName] = type;
+  localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+}
+function getTypePref(stockName) {
+  const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+  return p[stockName] || null;
+}
+
 // ================================================================
 // PRICE FETCHING
 // ================================================================
@@ -417,7 +454,7 @@ function parseKGI(text) {
       shares,
       avgCost,
       csvPrice:     isNaN(mktPrice) ? null : mktPrice,
-      type:         '長期',
+      type:         getTypePref(name) || '長期',
     });
   }
   return rows;
@@ -469,7 +506,13 @@ function showFormError(id, msg) {
 // ================================================================
 // RENDER — MASTER
 // ================================================================
-function render() { renderSummary(); renderTable(); renderCharts(); }
+function render() {
+  renderSummary(); renderTable(); renderCharts();
+  if (instCache) {
+    const codes = [...new Set(positions.map(p=>p.stockCode).filter(Boolean))];
+    renderInstitutional(codes);
+  }
+}
 
 // ================================================================
 // RENDER — SUMMARY
@@ -568,64 +611,145 @@ function setTab(tab) {
 // RENDER — CHARTS
 // ================================================================
 function renderCharts() {
-  // --- Allocation doughnut ---
-  const byCode = {};
+  let longVal = 0, shortVal = 0, longCost = 0, shortCost = 0;
   positions.forEach(p => {
-    const k = p.stockCode || p.stockName;
-    const {value} = calc(p);
-    if (!byCode[k]) byCode[k] = { name: p.stockName, value: 0 };
-    byCode[k].value += value;
+    const {value, cost} = calc(p);
+    if (p.type === '長期') { longVal += value; longCost += cost; }
+    else                   { shortVal += value; shortCost += cost; }
   });
-  const entries = Object.values(byCode).sort((a,b)=>b.value-a.value);
-  const totalV  = entries.reduce((s,e)=>s+e.value, 0);
+  const total = longVal + shortVal;
 
   const aCtx = document.getElementById('allocChart').getContext('2d');
   if (allocChart) allocChart.destroy();
   allocChart = new Chart(aCtx, {
     type: 'doughnut',
     data: {
-      labels: entries.map(e=>e.name),
-      datasets: [{ data: entries.map(e=>e.value), backgroundColor: COLORS, borderColor:'#0f172a', borderWidth:2 }]
+      labels: ['長期', '短期'],
+      datasets: [{ data: [longVal, shortVal], backgroundColor: ['#2563eb','#dc2626'], borderColor:'#0f172a', borderWidth:3 }]
     },
     options: {
-      responsive:true, maintainAspectRatio:false, cutout:'55%',
-      plugins: {
-        legend: { position:'right', labels:{ color:'#94a3b8', font:{size:11}, boxWidth:12, padding:8 } },
-        tooltip: { callbacks: { label: ctx => ` $${Math.round(ctx.raw).toLocaleString()}（${totalV>0?(ctx.raw/totalV*100).toFixed(1):0}%）` } }
-      }
-    }
-  });
-
-  // --- P&L horizontal bar ---
-  const barData = positions
-    .map(p => ({ label: `${p.stockName}${positions.filter(x=>x.stockName===p.stockName).length>1?(p.type==='長期'?' 長':' 短'):''}`, pnl: calc(p).pnl }))
-    .sort((a,b)=>b.pnl-a.pnl);
-
-  const pCtx = document.getElementById('pnlChart').getContext('2d');
-  if (pnlChart) pnlChart.destroy();
-  pnlChart = new Chart(pCtx, {
-    type: 'bar',
-    data: {
-      labels: barData.map(d=>d.label),
-      datasets: [{
-        data: barData.map(d=>d.pnl),
-        backgroundColor: barData.map(d=>d.pnl>=0?'rgba(248,113,113,0.65)':'rgba(74,222,128,0.65)'),
-        borderColor:     barData.map(d=>d.pnl>=0?'#f87171':'#4ade80'),
-        borderWidth:1, borderRadius:4
-      }]
-    },
-    options: {
-      responsive:true, maintainAspectRatio:false,
+      responsive:true, maintainAspectRatio:false, cutout:'62%',
       plugins: {
         legend: { display:false },
-        tooltip: { callbacks: { label: ctx=>`  ${ctx.raw>=0?'+':''}${Math.round(ctx.raw).toLocaleString()} 元` } }
-      },
-      scales: {
-        x: { ticks:{color:'#64748b',font:{size:11}}, grid:{color:'#1e293b'} },
-        y: { ticks:{color:'#64748b',font:{size:11}, callback:v=>(v>=0?'+':'')+v.toLocaleString()}, grid:{color:'#1e293b'} }
+        tooltip: { callbacks: { label: ctx => ` $${Math.round(ctx.raw).toLocaleString()}（${total>0?(ctx.raw/total*100).toFixed(1):0}%）` } }
       }
     }
   });
+
+  // Legend with water level detail
+  const longPct  = total > 0 ? (longVal/total*100).toFixed(1)  : '0.0';
+  const shortPct = total > 0 ? (shortVal/total*100).toFixed(1) : '0.0';
+  const longPnl  = longVal - longCost;
+  const shortPnl = shortVal - shortCost;
+  document.getElementById('allocLegend').innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#0a1120;border-radius:8px;">
+      <div style="width:10px;height:10px;border-radius:2px;background:#2563eb;flex-shrink:0;"></div>
+      <div style="flex:1;">
+        <div style="font-size:12px;font-weight:600;">長期 <span style="color:#64748b;font-weight:400;">${longPct}%</span></div>
+        <div style="font-size:11px;color:#64748b;">$${fmt(longVal)} ／ <span class="${pnlCls(longPnl)}">${pnlSign(longPnl)}$${fmt(longPnl)}</span></div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#0a1120;border-radius:8px;">
+      <div style="width:10px;height:10px;border-radius:2px;background:#dc2626;flex-shrink:0;"></div>
+      <div style="flex:1;">
+        <div style="font-size:12px;font-weight:600;">短期 <span style="color:#64748b;font-weight:400;">${shortPct}%</span></div>
+        <div style="font-size:11px;color:#64748b;">$${fmt(shortVal)} ／ <span class="${pnlCls(shortPnl)}">${pnlSign(shortPnl)}$${fmt(shortPnl)}</span></div>
+      </div>
+    </div>
+    <div style="padding:8px 10px;background:#0a1120;border-radius:8px;font-size:12px;color:#64748b;">
+      總水位 <strong style="color:#e2e8f0;">$${fmt(total)}</strong>
+    </div>`;
+}
+
+// ================================================================
+// INSTITUTIONAL DATA
+// ================================================================
+let instCache = null; // { date, data[] }
+
+function prevTradingDates(n) {
+  const dates = [];
+  const d = new Date();
+  while (dates.length < n) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) {
+      dates.push(`${d.getFullYear()}${(d.getMonth()+1).toString().padStart(2,'0')}${d.getDate().toString().padStart(2,'0')}`);
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  return dates;
+}
+
+async function fetchTWSEInst(dateStr) {
+  const url = `https://www.twse.com.tw/fund/T86?response=json&date=${dateStr}&selectType=ALL`;
+  for (const u of [url, `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
+    try {
+      const res = await fetch(u, { cache:'no-store' });
+      if (!res.ok) continue;
+      const d = await res.json();
+      if (d.stat === 'OK' && d.data && d.data.length > 0) return d;
+    } catch(e) { /* try next */ }
+  }
+  return null;
+}
+
+async function fetchAndRenderInstitutional() {
+  const btn = document.getElementById('instRefreshBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '載入中…'; }
+  document.getElementById('instTableBody').innerHTML =
+    '<tr><td colspan="5" style="text-align:center;color:#475569;padding:20px;">載入中…</td></tr>';
+
+  const codes = [...new Set(positions.map(p=>p.stockCode).filter(Boolean))];
+  if (!codes.length) {
+    document.getElementById('instTableBody').innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:#475569;padding:16px;">尚無部位資料</td></tr>';
+    if (btn) { btn.disabled = false; btn.textContent = '重新載入'; }
+    return;
+  }
+
+  let result = null;
+  for (const date of prevTradingDates(5)) {
+    result = await fetchTWSEInst(date);
+    if (result) break;
+  }
+
+  if (!result) {
+    document.getElementById('instTableBody').innerHTML =
+      '<tr><td colspan="5" style="text-align:center;color:#ef4444;padding:16px;">無法取得法人資料，請稍後再試</td></tr>';
+    if (btn) { btn.disabled = false; btn.textContent = '重新載入'; }
+    return;
+  }
+
+  instCache = result;
+  document.getElementById('instDate').textContent = `（${result.date}）`;
+  renderInstitutional(codes);
+  if (btn) { btn.disabled = false; btn.textContent = '重新載入'; }
+}
+
+function renderInstitutional(codes) {
+  if (!instCache || !codes) return;
+  // TWSE T86 field indices: [0]=代號 [10]=外資淨 [13]=投信淨 [22]=自營淨 [23]=三大合計
+  const rows = codes.map(code => {
+    const row = instCache.data.find(r => r[0] === code);
+    if (!row) return null;
+    const pos  = positions.find(p => p.stockCode === code);
+    const name = pos ? pos.stockName : row[1];
+    const parse = v => parseInt((v||'0').replace(/,/g,'')) || 0;
+    const foreign = Math.round(parse(row[10]) / 1000);
+    const trust   = Math.round(parse(row[13]) / 1000);
+    const dealer  = Math.round(parse(row[22]) / 1000);
+    const total   = Math.round(parse(row[23]) / 1000);
+    const cell = (v) => `<td class="${v>0?'pos':v<0?'neg':'neu'}" style="font-weight:600;">${v>0?'+':''}${v.toLocaleString()}</td>`;
+    return `<tr>
+      <td style="text-align:left;">
+        <div style="font-weight:700;font-size:13px;">${name}</div>
+        <div style="font-size:11px;color:#64748b;">${code}</div>
+      </td>
+      ${cell(foreign)}${cell(trust)}${cell(dealer)}${cell(total)}
+    </tr>`;
+  }).filter(Boolean).join('');
+
+  document.getElementById('instTableBody').innerHTML = rows ||
+    '<tr><td colspan="5" style="text-align:center;color:#475569;padding:16px;">所持股票今日無法人資料</td></tr>';
 }
 
 // ================================================================
@@ -670,9 +794,9 @@ function renderImportTable() {
         </select>
       </td>
       <td>
-        <select id="imp-type-${i}" style="width:72px;">
-          <option value="長期">長期</option>
-          <option value="短期">短期</option>
+        <select id="imp-type-${i}" style="width:72px;" onchange="saveTypePref('${r.stockName}',this.value)">
+          <option value="長期" ${r.type==='長期'?'selected':''}>長期</option>
+          <option value="短期" ${r.type==='短期'?'selected':''}>短期</option>
         </select>
       </td>
       <td>
@@ -695,6 +819,7 @@ function confirmImport() {
   }));
 
   newPos.forEach(p => {
+    saveTypePref(p.stockName, p.type);
     if (p.currentPrice && p.stockCode)
       prices[p.stockCode] = { price: p.currentPrice, updatedAt: new Date().toISOString() };
     positions.push(p);
@@ -771,6 +896,7 @@ function savePosition() {
   } else {
     positions.push({ id:uid(), stockCode:code, stockName:name, market, type, shares, avgCost:cost, notes });
   }
+  saveTypePref(name, type);
   saveState(); hideAddModal(); render();
 }
 
@@ -937,6 +1063,7 @@ window.onload = () => {
   loadState();
   render();
   setLastUpdated();
+  fetchAndRenderInstitutional();
 };
 </script>
 </body>
