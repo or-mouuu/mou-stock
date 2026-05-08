@@ -1132,11 +1132,18 @@ function showDetailModal(id) {
       const actionBadge=isBuy
         ? `<span class="badge" style="background:var(--long-bg);color:var(--long-fg);">買進</span>`
         : `<span class="badge" style="background:var(--short-bg);color:var(--short-fg);">賣出</span>`;
+      let retCell = '<td>—</td>';
+      if (isBuy && tx.price > 0) {
+        const txRet = (price - tx.price) / tx.price * 100;
+        const txSign = txRet >= 0 ? '+' : '';
+        retCell = `<td class="${pnlCls(txRet)}" style="font-weight:600;font-variant-numeric:tabular-nums;">${txSign}${fmtD(txRet)}%</td>`;
+      }
       return `<tr>
         <td style="text-align:left;font-variant-numeric:tabular-nums;">${tx.date}</td>
         <td>${actionBadge}</td>
         <td style="font-variant-numeric:tabular-nums;">${tx.shares.toLocaleString()}</td>
         <td style="font-variant-numeric:tabular-nums;">${fmtD(tx.price)}</td>
+        ${retCell}
         <td style="font-variant-numeric:tabular-nums;">${isBuy&&days!==null?days+'天':'—'}</td>
         <td style="text-align:left;color:var(--muted);font-size:12px;">${tx.note||''}</td>
         <td onclick="event.stopPropagation()" style="text-align:center;">
@@ -1174,7 +1181,7 @@ function showDetailModal(id) {
       <table>
         <thead><tr>
           <th style="text-align:left;">日期</th><th>動作</th><th>股數</th>
-          <th>成交價</th><th>持有天數</th><th style="text-align:left;">備註</th><th></th>
+          <th>成交價</th><th>報酬率</th><th>持有天數</th><th style="text-align:left;">備註</th><th></th>
         </tr></thead>
         <tbody id="txTableBody">${txRows}</tbody>
       </table></div>`
