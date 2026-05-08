@@ -443,6 +443,7 @@ let importRows     = [];
 let importIsDetail = false;
 let txTargetId   = null;  // position id for current transaction modal
 let allocChart   = null;
+let dailyChanges = {};  // { stockCode: { change, price } }
 
 // ════════════════════════════════════════════════
 // STORAGE
@@ -652,7 +653,7 @@ function renderTable() {
     const cls  = pnlCls(pnl);
     const sign = pnlSign(pnl);
     const badge = `<span class="badge badge-${p.type==='長期'?'long':'short'}">${p.type}</span>`;
-    const priceCls = pnl>=0?'pos':'neg';
+    const daily = dailyChanges[p.stockCode];
     const fbd = firstBuyDate(p);
     const fbdStr = fbd ? `<div style="font-size:12px;">${fbd}</div><div style="font-size:11px;color:var(--subtle);">${daysSince(fbd)}天</div>` : '<span style="color:var(--subtle);">—</span>';
     const pct = fmtD(p._pct || 0, 1);
@@ -665,7 +666,10 @@ function renderTable() {
       <td style="font-variant-numeric:tabular-nums;color:var(--muted);">${pct}%</td>
       <td style="font-variant-numeric:tabular-nums;">${p.shares.toLocaleString()}</td>
       <td style="font-variant-numeric:tabular-nums;">${fmtD(p.avgCost)}</td>
-      <td class="${priceCls}" style="font-weight:600;font-variant-numeric:tabular-nums;">${fmtD(price)}</td>
+      <td style="font-variant-numeric:tabular-nums;">
+        <div style="font-weight:600;">${fmtD(price)}</div>
+        ${daily!=null?`<div class="${daily.change>0?'pos':daily.change<0?'neg':'neu'}" style="font-size:11px;">${daily.change>=0?'+':''}${daily.change.toFixed(2)}%</div>`:''}
+      </td>
       <td style="font-variant-numeric:tabular-nums;">$${fmt(cost)}</td>
       <td style="font-variant-numeric:tabular-nums;">$${fmt(value)}</td>
       <td class="${cls}" style="font-weight:600;font-variant-numeric:tabular-nums;">${sign}$${fmt(pnl)}</td>
@@ -1242,6 +1246,9 @@ async function fetchAndRenderDaily() {
       fetchPriceInfo(code,market).then(r=>r?{code,name,...r}:null))
   ];
   const results=(await Promise.all(tasks)).filter(Boolean);
+  // Store in global map for table use, then re-render table
+  results.filter(r=>r.code!=='t00').forEach(r=>{ dailyChanges[r.code]={change:r.change,price:r.price}; });
+  renderTable();
   const taiex=results.find(r=>r.code==='t00');
   const stocks=results.filter(r=>r.code!=='t00').sort((a,b)=>Math.abs(b.change)-Math.abs(a.change));
   const items=taiex?[taiex,...stocks]:stocks;
