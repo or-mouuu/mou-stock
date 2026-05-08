@@ -22,6 +22,7 @@
     --loss:     #16a34a;
     --long-bg:  #eff6ff; --long-fg: #1d4ed8;
     --short-bg: #fef2f2; --short-fg: #dc2626;
+    --etf-bg:   #f0f9ff; --etf-fg:  #0369a1;
     --primary:  #0f172a; --primary-fg: #ffffff;
     --r:        8px;
   }
@@ -60,6 +61,7 @@
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
   .badge-long  { background:var(--long-bg);  color:var(--long-fg); }
   .badge-short { background:var(--short-bg); color:var(--short-fg); }
+  .badge-etf   { background:var(--etf-bg);   color:var(--etf-fg); }
 
   /* ── Tabs ── */
   .tabs { display:flex; align-items:center; border-bottom:1px solid var(--border); }
@@ -133,11 +135,9 @@
     <!-- Card 1: Portfolio allocation -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
       <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">資金水位</div>
-      <div style="position:relative;height:130px;flex-shrink:0;"><canvas id="allocChart"></canvas></div>
-      <div style="flex:1;overflow-y:auto;min-height:0;margin-top:8px;">
-        <div id="allocLegend" style="display:flex;flex-direction:column;gap:4px;"></div>
-        <div id="allocStats"></div>
-      </div>
+      <div id="allocBar" style="height:28px;border-radius:6px;overflow:hidden;display:flex;gap:2px;flex-shrink:0;background:var(--border);margin-bottom:10px;"></div>
+      <div id="allocLegend" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;"></div>
+      <div id="allocStats" style="flex-shrink:0;"></div>
     </div>
 
     <!-- Card 2: Daily changes -->
@@ -182,6 +182,7 @@
       <div class="tab active" id="tab-all"   onclick="setTab('all')">全部</div>
       <div class="tab"        id="tab-long"  onclick="setTab('long')">長期</div>
       <div class="tab"        id="tab-short" onclick="setTab('short')">短期</div>
+      <div class="tab"        id="tab-etf"   onclick="setTab('etf')">ETF</div>
       <div style="margin-left:auto;padding:8px 0;">
         <input type="text" placeholder="搜尋…" id="searchInput" oninput="renderTable()"
                style="width:160px;padding:5px 10px;font-size:12px;">
@@ -294,6 +295,7 @@
           <select id="fType" style="width:100%;">
             <option value="長期">長期</option>
             <option value="短期">短期</option>
+            <option value="ETF">ETF</option>
           </select>
         </div>
         <div>
@@ -643,7 +645,7 @@ function getFiltered() {
   const totalValue = positions.reduce((s,p)=>s+calc(p).value, 0);
   return positions
     .filter(p => {
-      const okTab = currentTab==='all' ||(currentTab==='long'&&p.type==='長期')||(currentTab==='short'&&p.type==='短期');
+      const okTab = currentTab==='all'||(currentTab==='long'&&p.type==='長期')||(currentTab==='short'&&p.type==='短期')||(currentTab==='etf'&&p.type==='ETF');
       const okQ   = !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q);
       return okTab && okQ;
     })
@@ -662,7 +664,7 @@ function renderTable() {
     const {price,cost,value,pnl,ret} = calc(p);
     const cls  = pnlCls(pnl);
     const sign = pnlSign(pnl);
-    const badge = `<span class="badge badge-${p.type==='長期'?'long':'short'}">${p.type}</span>`;
+    const badge = `<span class="badge badge-${p.type==='ETF'?'etf':p.type==='長期'?'long':'short'}">${p.type}</span>`;
     const daily = dailyChanges[p.stockCode];
     const fbd = firstBuyDate(p);
     const fbdStr = fbd ? `<div style="font-size:12px;">${fbd}</div><div style="font-size:11px;color:var(--subtle);">${daysSince(fbd)}天</div>` : '<span style="color:var(--subtle);">—</span>';
@@ -698,7 +700,7 @@ function renderTable() {
 
 function setTab(tab) {
   currentTab = tab;
-  ['all','long','short'].forEach(t =>
+  ['all','long','short','etf'].forEach(t =>
     document.getElementById('tab-'+t).className = 'tab'+(t===tab?' active':''));
   renderTable();
 }
@@ -707,53 +709,42 @@ function setTab(tab) {
 // RENDER — CHART
 // ════════════════════════════════════════════════
 function renderCharts() {
-  let lv=0, lc=0, sv=0, sc=0;
+  let ev=0, ec=0, lv=0, lc=0, sv=0, sc=0;
   positions.forEach(p => {
     const {value,cost}=calc(p);
-    if (p.type==='長期') { lv+=value; lc+=cost; } else { sv+=value; sc+=cost; }
+    if (p.type==='ETF')      { ev+=value; ec+=cost; }
+    else if (p.type==='長期') { lv+=value; lc+=cost; }
+    else                      { sv+=value; sc+=cost; }
   });
-  const total=lv+sv, totalCost=lc+sc;
+  const total=ev+lv+sv, totalCost=ec+lc+sc;
   const totalPnl=total-totalCost;
   const totalRet=totalCost>0?(totalPnl/totalCost)*100:0;
 
-  const ctx = document.getElementById('allocChart').getContext('2d');
-  if (allocChart) allocChart.destroy();
-  allocChart = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: ['長期','短期'],
-      datasets: [{ data:[lv,sv], backgroundColor:['#3b82f6','#ef4444'],
-                   borderColor:'#ffffff', borderWidth:3 }]
-    },
-    options: {
-      responsive:true, maintainAspectRatio:false, cutout:'62%',
-      plugins: {
-        legend:{ display:false },
-        tooltip:{ callbacks:{ label: ctx=>`  $${Math.round(ctx.raw).toLocaleString()}（${total>0?(ctx.raw/total*100).toFixed(1):0}%）` } }
-      }
-    }
-  });
+  // Stacked bar (CSS flex)
+  const barEl=document.getElementById('allocBar');
+  const segs=[{v:ev,c:'#0ea5e9'},{v:lv,c:'#3b82f6'},{v:sv,c:'#ef4444'}].filter(s=>s.v>0);
+  barEl.innerHTML=total?segs.map(s=>`<div style="flex:${s.v};background:${s.c};height:100%;"></div>`).join(''):'';
 
-  const lPct=total>0?(lv/total*100).toFixed(1):'0.0';
-  const sPct=total>0?(sv/total*100).toFixed(1):'0.0';
-  const lPnl=lv-lc, sPnl=sv-sc;
-  document.getElementById('allocLegend').innerHTML = `
-    <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
-      <div style="width:8px;height:8px;border-radius:2px;background:#3b82f6;flex-shrink:0;"></div>
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:11px;font-weight:600;">長期 <span style="font-weight:400;color:var(--muted);">${lPct}%</span>
-          <span class="${pnlCls(lPnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(lPnl)}$${fmt(lPnl)}</span></div>
-      </div>
-    </div>
-    <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
-      <div style="width:8px;height:8px;border-radius:2px;background:#ef4444;flex-shrink:0;"></div>
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:11px;font-weight:600;">短期 <span style="font-weight:400;color:var(--muted);">${sPct}%</span>
-          <span class="${pnlCls(sPnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(sPnl)}$${fmt(sPnl)}</span></div>
+  // Legend rows
+  const types=[
+    {label:'ETF', v:ev, cost:ec, c:'#0ea5e9'},
+    {label:'長期', v:lv, cost:lc, c:'#3b82f6'},
+    {label:'短期', v:sv, cost:sc, c:'#ef4444'},
+  ];
+  document.getElementById('allocLegend').innerHTML=types.filter(x=>x.v>0).map(x=>{
+    const pct=total>0?(x.v/total*100).toFixed(1):'0.0';
+    const pnl=x.v-x.cost;
+    return `<div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
+      <div style="width:8px;height:8px;border-radius:2px;background:${x.c};flex-shrink:0;"></div>
+      <div style="flex:1;min-width:0;font-size:11px;font-weight:600;">${x.label}
+        <span style="font-weight:400;color:var(--muted);">${pct}%</span>
+        <span class="${pnlCls(pnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(pnl)}$${fmt(pnl)}</span>
       </div>
     </div>`;
+  }).join('');
+
   const sign=pnlSign(totalPnl);
-  document.getElementById('allocStats').innerHTML = `
+  document.getElementById('allocStats').innerHTML=`
     <div style="height:1px;background:var(--border);margin:8px 0;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
       ${smallStat('總投入成本','$'+fmt(totalCost))}
@@ -826,6 +817,7 @@ function renderImportTable() {
       <td><select id="imp-type-${i}" style="width:68px;" onchange="saveTypePref('${r.stockName}',this.value)">
         <option value="長期" ${r.type==='長期'?'selected':''}>長期</option>
         <option value="短期" ${r.type==='短期'?'selected':''}>短期</option>
+        <option value="ETF" ${r.type==='ETF'?'selected':''}>ETF</option>
       </select></td>
       <td><button class="btn btn-danger btn-sm" onclick="importRows.splice(${i},1);renderImportTable()">移除</button></td>`;
     if (importIsDetail) {
@@ -948,6 +940,7 @@ function renderSplitRows() {
         <select id="sr-type-${i}" style="width:100%;">
           <option value="長期" ${r.type==='長期'?'selected':''}>長期</option>
           <option value="短期" ${r.type==='短期'?'selected':''}>短期</option>
+          <option value="ETF" ${r.type==='ETF'?'selected':''}>ETF</option>
         </select>
       </div>
       <div>
