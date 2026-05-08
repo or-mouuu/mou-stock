@@ -133,9 +133,11 @@
     <!-- Card 1: Portfolio allocation -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
       <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">資金水位</div>
-      <div style="position:relative;height:140px;flex-shrink:0;"><canvas id="allocChart"></canvas></div>
-      <div id="allocLegend" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;flex-shrink:0;overflow-y:auto;"></div>
-      <div id="allocStats" style="flex-shrink:0;"></div>
+      <div style="position:relative;height:130px;flex-shrink:0;"><canvas id="allocChart"></canvas></div>
+      <div style="flex:1;overflow-y:auto;min-height:0;margin-top:8px;">
+        <div id="allocLegend" style="display:flex;flex-direction:column;gap:4px;"></div>
+        <div id="allocStats"></div>
+      </div>
     </div>
 
     <!-- Card 2: Daily changes -->
@@ -668,7 +670,7 @@ function renderTable() {
       <td style="font-variant-numeric:tabular-nums;">${fmtD(p.avgCost)}</td>
       <td style="font-variant-numeric:tabular-nums;">
         <div style="font-weight:600;">${fmtD(price)}</div>
-        ${daily!=null?`<div class="${daily.change>0?'pos':daily.change<0?'neg':'neu'}" style="font-size:11px;">${daily.change>=0?'+':''}${daily.change.toFixed(2)}%</div>`:''}
+        ${daily!=null&&daily.change!=null?`<div class="${daily.change>0?'pos':daily.change<0?'neg':'neu'}" style="font-size:11px;">${daily.change>=0?'+':''}${daily.change.toFixed(2)}%</div>`:''}
       </td>
       <td style="font-variant-numeric:tabular-nums;">$${fmt(cost)}</td>
       <td style="font-variant-numeric:tabular-nums;">$${fmt(value)}</td>
@@ -1225,8 +1227,10 @@ async function fetchPriceInfo(code, market) {
         const info=d.msgArray[0];
         const price=parseFloat(info.z!=='-'?info.z:info.y);
         const prev =parseFloat(info.y);
-        if (!isNaN(price)&&price>0&&!isNaN(prev)&&prev>0)
-          return {price, prev, change:(price-prev)/prev*100};
+        if (!isNaN(price)&&price>0) {
+          const change=(!isNaN(prev)&&prev>0)?(price-prev)/prev*100:null;
+          return {price, change};
+        }
       }
     } catch(e) {}
   }
@@ -1250,18 +1254,20 @@ async function fetchAndRenderDaily() {
   results.filter(r=>r.code!=='t00').forEach(r=>{ dailyChanges[r.code]={change:r.change,price:r.price}; });
   renderTable();
   const taiex=results.find(r=>r.code==='t00');
-  const stocks=results.filter(r=>r.code!=='t00').sort((a,b)=>Math.abs(b.change)-Math.abs(a.change));
+  const stocks=results.filter(r=>r.code!=='t00').sort((a,b)=>Math.abs(b.change||0)-Math.abs(a.change||0));
   const items=taiex?[taiex,...stocks]:stocks;
   const now=new Date();
   document.getElementById('dailyTime').textContent=
     `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
   document.getElementById('dailyList').innerHTML=items.map((item,i)=>{
-    const sign=item.change>=0?'+':'';
-    const cls=item.change>0?'pos':item.change<0?'neg':'neu';
+    const ch=item.change;
+    const sign=ch!=null&&ch>=0?'+':'';
+    const cls=ch!=null?(ch>0?'pos':ch<0?'neg':'neu'):'neu';
+    const chStr=ch!=null?`${sign}${ch.toFixed(2)}%`:'—';
     const isTaiex=item.code==='t00';
     return `<div style="display:flex;align-items:center;padding:5px 0;${i<items.length-1?'border-bottom:1px solid var(--border);':''}${isTaiex?'margin-bottom:4px;':''}">
       <div style="flex:1;font-size:13px;font-weight:${isTaiex?'600':'500'};">${item.name}</div>
-      <div class="${cls}" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-right:10px;">${sign}${item.change.toFixed(2)}%</div>
+      <div class="${cls}" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-right:10px;">${chStr}</div>
       <div style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:52px;text-align:right;">${fmtD(item.price)}</div>
     </div>`;
   }).join('')||'<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">無法取得資料</div>';
@@ -1273,22 +1279,36 @@ async function fetchAndRenderDaily() {
 async function fetchAndRenderYTD() {
   const el=document.getElementById('ytdContent');
 
-  // TAIEX YTD via Yahoo Finance proxy
-  let taiexYTD=null;
-  try {
-    const url=`https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=ytd`;
-    const res=await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,{cache:'no-store'});
-    const d=await res.json();
-    const closes=(d.chart?.result?.[0]?.indicators?.quote?.[0]?.close||[]).filter(c=>c!=null);
-    if (closes.length>=2) taiexYTD=(closes[closes.length-1]-closes[0])/closes[0]*100;
-  } catch(e) {}
+  // Current TAIEX via mis.twse.com.tw
+  let taiexNow=null;
+  const tInfo=await fetchPriceInfo('t00','tse');
+  if (tInfo) taiexNow=tInfo.price;
+
+  // Jan 2, 2026 TAIEX close — cached in localStorage, else fetch from TWSE
+  const JAN2_KEY='taiex_jan2_2026';
+  let taiexJan2=parseFloat(localStorage.getItem(JAN2_KEY)||'');
+  if (isNaN(taiexJan2)||taiexJan2<=0) {
+    try {
+      const url='https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=20260102';
+      for (const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
+        const res=await fetch(u,{cache:'force-cache'}); if(!res.ok) continue;
+        const d=await res.json();
+        if (d.stat==='OK'&&d.data?.length) {
+          const last=d.data[d.data.length-1];
+          const v=parseFloat((last[1]||'').replace(/,/g,''));
+          if (!isNaN(v)&&v>0){taiexJan2=v;localStorage.setItem(JAN2_KEY,String(v));break;}
+        }
+      }
+    } catch(e){}
+  }
+  const taiexYTD=(taiexNow&&taiexJan2)?(taiexNow-taiexJan2)/taiexJan2*100:null;
 
   // Portfolio return (cost-based)
   const totalCost=positions.reduce((s,p)=>s+calc(p).cost,0);
   const totalVal =positions.reduce((s,p)=>s+calc(p).value,0);
   const portRet  =totalCost>0?(totalVal-totalCost)/totalCost*100:null;
 
-  function ytdBlock(label, val, note) {
+  function ytdBlock(label,val,note) {
     if (val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
     const sign=val>=0?'+':'';
     const col=val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
@@ -1301,7 +1321,7 @@ async function fetchAndRenderYTD() {
 
   const diff=taiexYTD!==null&&portRet!==null?portRet-taiexYTD:null;
   el.innerHTML=
-    ytdBlock('台股加權指數 YTD',taiexYTD,'Yahoo Finance / 今年第一個交易日至今')+
+    ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2026/1/2 收盤至今')+
     ytdBlock('持倉整體報酬率',portRet,'以各部位成本均價計算')+
     (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
       相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
