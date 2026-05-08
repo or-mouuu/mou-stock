@@ -127,47 +127,14 @@
 <!-- ═══ MAIN ═══ -->
 <div class="page">
 
-  <!-- ── Charts + Institutional ── -->
-  <div style="display:grid;grid-template-columns:280px 1fr;gap:16px;margin-bottom:16px;">
-
-    <!-- Allocation doughnut -->
-    <div class="card" style="padding:20px;">
+  <!-- ── Chart ── -->
+  <div style="margin-bottom:16px;">
+    <div class="card" style="padding:20px;max-width:340px;">
       <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;
                   letter-spacing:.04em;margin-bottom:14px;">資金水位</div>
       <div style="position:relative;height:180px;"><canvas id="allocChart"></canvas></div>
       <div id="allocLegend" style="margin-top:12px;display:flex;flex-direction:column;gap:6px;"></div>
     </div>
-
-    <!-- Institutional -->
-    <div class="card" style="padding:20px;display:flex;flex-direction:column;min-height:0;">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-shrink:0;">
-        <span style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">法人籌碼</span>
-        <span id="instDate" style="font-size:11px;color:var(--subtle);"></span>
-        <button onclick="fetchAndRenderInstitutional()" id="instRefreshBtn"
-          style="margin-left:auto;font-size:11px;" class="btn btn-ghost btn-sm">重新載入</button>
-      </div>
-      <div style="flex:1;overflow-y:auto;min-height:0;">
-        <table id="instTable">
-          <thead>
-            <tr>
-              <th rowspan="2" style="text-align:left;vertical-align:bottom;">股票</th>
-              <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border);">外資（張）</th>
-              <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border);">投信（張）</th>
-              <th colspan="3" style="text-align:center;border-bottom:1px solid var(--border);">三大法人（張）</th>
-            </tr>
-            <tr>
-              <th>當日</th><th>5日</th><th>20日</th>
-              <th>當日</th><th>5日</th><th>20日</th>
-              <th>當日</th><th>5日</th><th>20日</th>
-            </tr>
-          </thead>
-          <tbody id="instTableBody">
-            <tr><td colspan="10" style="text-align:center;color:var(--subtle);padding:20px;">載入中…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
   </div>
 
   <!-- ── Positions Table ── -->
@@ -187,6 +154,7 @@
           <tr>
             <th style="padding-left:20px;">股票</th>
             <th>類型</th>
+            <th>佔比</th>
             <th>股數</th>
             <th>成本均價</th>
             <th>現價</th>
@@ -446,7 +414,6 @@ let importRows     = [];
 let importIsDetail = false;
 let txTargetId   = null;  // position id for current transaction modal
 let allocChart   = null;
-let instCache    = null;
 
 // ════════════════════════════════════════════════
 // STORAGE
@@ -626,12 +593,6 @@ function toast(msg, type='ok') {
 // ════════════════════════════════════════════════
 function render() {
   renderTable(); renderCharts();
-  // Re-render institutional table from cache if available
-  if (instCache && Object.keys(instCache).length) {
-    const codes = [...new Set(positions.map(p=>p.stockCode).filter(Boolean))];
-    const tradingDates = prevTradingDates(20);
-    renderInstitutional(codes, tradingDates, instCache);
-  }
 }
 
 // ════════════════════════════════════════════════
@@ -639,13 +600,15 @@ function render() {
 // ════════════════════════════════════════════════
 function getFiltered() {
   const q = (document.getElementById('searchInput')?.value||'').toLowerCase();
+  const totalValue = positions.reduce((s,p)=>s+calc(p).value, 0);
   return positions
     .filter(p => {
       const okTab = currentTab==='all' ||(currentTab==='long'&&p.type==='長期')||(currentTab==='short'&&p.type==='短期');
       const okQ   = !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q);
       return okTab && okQ;
     })
-    .sort((a,b)=> a.stockName!==b.stockName ? (a.stockName<b.stockName?-1:1) : (a.type==='長期'?-1:1));
+    .map(p => ({ ...p, _pct: totalValue > 0 ? calc(p).value / totalValue * 100 : 0 }))
+    .sort((a,b) => b._pct - a._pct);
 }
 
 function renderTable() {
@@ -663,12 +626,14 @@ function renderTable() {
     const priceCls = pnl>=0?'pos':'neg';
     const fbd = firstBuyDate(p);
     const fbdStr = fbd ? `<div style="font-size:12px;">${fbd}</div><div style="font-size:11px;color:var(--subtle);">${daysSince(fbd)}天</div>` : '<span style="color:var(--subtle);">—</span>';
+    const pct = fmtD(p._pct || 0, 1);
     return `<tr onclick="showDetailModal('${p.id}')">
       <td style="padding-left:20px;">
         <div style="font-weight:600;">${p.stockName}</div>
         <div style="font-size:11px;color:var(--subtle);">${p.stockCode||'未設代號'}</div>
       </td>
       <td>${badge}</td>
+      <td style="font-variant-numeric:tabular-nums;color:var(--muted);">${pct}%</td>
       <td style="font-variant-numeric:tabular-nums;">${p.shares.toLocaleString()}</td>
       <td style="font-variant-numeric:tabular-nums;">${fmtD(p.avgCost)}</td>
       <td class="${priceCls}" style="font-weight:600;font-variant-numeric:tabular-nums;">${fmtD(price)}</td>
@@ -750,134 +715,6 @@ function renderCharts() {
 // ════════════════════════════════════════════════
 // INSTITUTIONAL DATA  (當日 / 5日 / 20日)
 // ════════════════════════════════════════════════
-const INST_HIST_KEY = 'inst_history_v2';
-
-function prevTradingDates(n) {
-  const dates=[]; const d=new Date();
-  // If before 15:00 Taiwan time, today's data may not be ready — start from yesterday
-  const nowHr = new Date().toLocaleString('en-US',{timeZone:'Asia/Taipei',hour:'numeric',hour12:false});
-  if (parseInt(nowHr) < 15) d.setDate(d.getDate()-1);
-  while (dates.length<n) {
-    const day=d.getDay();
-    if (day!==0&&day!==6)
-      dates.push(`${d.getFullYear()}${(d.getMonth()+1).toString().padStart(2,'0')}${d.getDate().toString().padStart(2,'0')}`);
-    d.setDate(d.getDate()-1);
-  }
-  return dates;
-}
-
-function loadInstHist() {
-  try { return JSON.parse(localStorage.getItem(INST_HIST_KEY)||'{}'); } catch(e) { return {}; }
-}
-function saveInstHist(hist) {
-  // Keep only last 25 dates to cap storage usage
-  const pruned={};
-  Object.keys(hist).sort().slice(-25).forEach(k=>pruned[k]=hist[k]);
-  localStorage.setItem(INST_HIST_KEY, JSON.stringify(pruned));
-}
-
-async function fetchTWSEInst(dateStr) {
-  const url=`https://www.twse.com.tw/fund/T86?response=json&date=${dateStr}&selectType=ALL`;
-  for (const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
-    try {
-      const res=await fetch(u,{cache:'no-store'}); if (!res.ok) continue;
-      const d=await res.json();
-      if (d.stat==='OK'&&d.data?.length>0) return { date:d.date, data:d.data };
-    } catch(e) { /* next */ }
-  }
-  return null;
-}
-
-async function fetchAndRenderInstitutional() {
-  const btn=document.getElementById('instRefreshBtn');
-  if (btn) { btn.disabled=true; btn.textContent='載入中…'; }
-  document.getElementById('instTableBody').innerHTML=
-    '<tr><td colspan="10" style="text-align:center;color:var(--subtle);padding:20px;">載入 20 日資料中，首次需要一點時間…</td></tr>';
-
-  const codes=[...new Set(positions.map(p=>p.stockCode).filter(Boolean))];
-  if (!codes.length) {
-    document.getElementById('instTableBody').innerHTML=
-      '<tr><td colspan="10" style="text-align:center;color:var(--subtle);padding:16px;">尚無部位</td></tr>';
-    if (btn) { btn.disabled=false; btn.textContent='重新載入'; }
-    return;
-  }
-
-  const tradingDates = prevTradingDates(20);
-  const hist = loadInstHist();
-  const mostRecent = tradingDates[0];
-
-  // Always re-fetch the most recent date (data may update during the day)
-  // Past dates: only fetch if not cached
-  const toFetch = tradingDates.filter((d,i) => i===0 ? true : !hist[d]);
-
-  // Fetch in parallel batches of 5
-  for (let i=0; i<toFetch.length; i+=5) {
-    await Promise.all(toFetch.slice(i,i+5).map(async date => {
-      const res = await fetchTWSEInst(date);
-      if (res) hist[date] = res;
-    }));
-  }
-  saveInstHist(hist);
-  instCache = hist; // store the full history map
-
-  // Show the most recent date that has data
-  const latestDate = tradingDates.find(d=>hist[d]);
-  if (!latestDate) {
-    document.getElementById('instTableBody').innerHTML=
-      '<tr><td colspan="10" style="text-align:center;color:var(--profit);padding:16px;">無法取得資料，請稍後再試</td></tr>';
-    if (btn) { btn.disabled=false; btn.textContent='重新載入'; }
-    return;
-  }
-  document.getElementById('instDate').textContent=`（${hist[latestDate].date}）`;
-  renderInstitutional(codes, tradingDates, hist);
-  if (btn) { btn.disabled=false; btn.textContent='重新載入'; }
-}
-
-function renderInstitutional(codes, tradingDates, hist) {
-  if (!hist||!codes||!tradingDates) return;
-
-  const pn = v => parseInt((v||'0').replace(/,/g,''))||0;
-
-  // Sum a field across n dates for a given stock code
-  function sumField(code, fieldIdx, nDays) {
-    return tradingDates.slice(0, nDays).reduce((total, date) => {
-      const dayData = hist[date]?.data;
-      if (!dayData) return total;
-      const row = dayData.find(r=>r[0]===code);
-      return total + (row ? pn(row[fieldIdx]) : 0);
-    }, 0);
-  }
-
-  // T86: [10]=外資淨 [13]=投信淨 [23]=三大法人淨
-  function cell(raw) {
-    const n = Math.round(raw / 1000);
-    const cls = n>0?'pos':n<0?'neg':'neu';
-    return `<td class="${cls}" style="font-weight:600;font-variant-numeric:tabular-nums;">${n>0?'+':''}${n.toLocaleString()}</td>`;
-  }
-
-  const rows = codes.map(code => {
-    const pos  = positions.find(p=>p.stockCode===code);
-    const name = pos?.stockName || code;
-    // Check if we have any data for this code at all
-    const hasAny = tradingDates.some(d=>hist[d]?.data?.find(r=>r[0]===code));
-    if (!hasAny) return null;
-
-    const f1=sumField(code,10,1);  const f5=sumField(code,10,5);  const f20=sumField(code,10,20);
-    const t1=sumField(code,13,1);  const t5=sumField(code,13,5);  const t20=sumField(code,13,20);
-    const s1=sumField(code,23,1);  const s5=sumField(code,23,5);  const s20=sumField(code,23,20);
-
-    return `<tr>
-      <td style="text-align:left;font-weight:500;white-space:nowrap;">${name}</td>
-      ${cell(f1)}${cell(f5)}${cell(f20)}
-      ${cell(t1)}${cell(t5)}${cell(t20)}
-      ${cell(s1)}${cell(s5)}${cell(s20)}
-    </tr>`;
-  }).filter(Boolean).join('');
-
-  document.getElementById('instTableBody').innerHTML = rows ||
-    '<tr><td colspan="10" style="text-align:center;color:var(--subtle);padding:12px;">所持股票無法人資料</td></tr>';
-}
-
 // ════════════════════════════════════════════════
 // IMPORT MODAL
 // ════════════════════════════════════════════════
@@ -1246,17 +1083,8 @@ function deleteTx(posId, txId) {
 // ════════════════════════════════════════════════
 window.onload=()=>{
   loadState();
-  // Restore inst cache so table renders immediately from last session
-  const savedHist = loadInstHist();
-  if (Object.keys(savedHist).length) {
-    instCache = savedHist;
-    const dates = prevTradingDates(20);
-    const latestDate = dates.find(d=>savedHist[d]);
-    if (latestDate) document.getElementById('instDate').textContent=`（${savedHist[latestDate].date}）`;
-  }
   render();
   setLastUpdated();
-  fetchAndRenderInstitutional();
 };
 </script>
 </body>
