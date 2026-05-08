@@ -127,15 +127,44 @@
 <!-- ═══ MAIN ═══ -->
 <div class="page">
 
-  <!-- ── Chart ── -->
-  <div style="margin-bottom:16px;">
-    <div class="card" style="padding:20px;max-width:340px;">
-      <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;
-                  letter-spacing:.04em;margin-bottom:14px;">資金水位</div>
-      <div style="position:relative;height:180px;"><canvas id="allocChart"></canvas></div>
-      <div id="allocLegend" style="margin-top:12px;display:flex;flex-direction:column;gap:6px;"></div>
+  <!-- ── Top 4 Cards ── -->
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
+
+    <!-- Card 1: Portfolio allocation -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">資金水位</div>
+      <div style="position:relative;height:140px;flex-shrink:0;"><canvas id="allocChart"></canvas></div>
+      <div id="allocLegend" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;flex-shrink:0;overflow-y:auto;"></div>
+      <div id="allocStats" style="flex-shrink:0;"></div>
     </div>
+
+    <!-- Card 2: Daily changes -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-shrink:0;">
+        <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">今日漲跌</span>
+        <span id="dailyTime" style="font-size:11px;color:var(--subtle);margin-left:auto;"></span>
+      </div>
+      <div id="dailyList" style="flex:1;overflow-y:auto;min-height:0;">
+        <div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>
+      </div>
+    </div>
+
+    <!-- Card 3: YTD performance -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">年初至今（YTD）</div>
+      <div id="ytdContent" style="flex:1;overflow-y:auto;min-height:0;">
+        <div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>
+      </div>
+    </div>
+
+    <!-- Card 4: Sector treemap -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">板塊分佈</div>
+      <div id="treemapContainer" style="flex:1;position:relative;min-height:0;overflow:hidden;border-radius:4px;"></div>
+    </div>
+
   </div>
+  <div id="treemapTooltip" style="display:none;position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;z-index:9999;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.12);min-width:160px;line-height:1.8;"></div>
 
   <!-- ── Positions Table ── -->
   <div class="card">
@@ -592,7 +621,7 @@ function toast(msg, type='ok') {
 // RENDER — MASTER
 // ════════════════════════════════════════════════
 function render() {
-  renderTable(); renderCharts();
+  renderTable(); renderCharts(); renderTreemap();
 }
 
 // ════════════════════════════════════════════════
@@ -669,7 +698,9 @@ function renderCharts() {
     const {value,cost}=calc(p);
     if (p.type==='長期') { lv+=value; lc+=cost; } else { sv+=value; sc+=cost; }
   });
-  const total=lv+sv;
+  const total=lv+sv, totalCost=lc+sc;
+  const totalPnl=total-totalCost;
+  const totalRet=totalCost>0?(totalPnl/totalCost)*100:0;
 
   const ctx = document.getElementById('allocChart').getContext('2d');
   if (allocChart) allocChart.destroy();
@@ -689,27 +720,39 @@ function renderCharts() {
     }
   });
 
-  const lPct  = total>0?(lv/total*100).toFixed(1):'0.0';
-  const sPct  = total>0?(sv/total*100).toFixed(1):'0.0';
-  const lPnl  = lv-lc, sPnl=sv-sc;
+  const lPct=total>0?(lv/total*100).toFixed(1):'0.0';
+  const sPct=total>0?(sv/total*100).toFixed(1):'0.0';
+  const lPnl=lv-lc, sPnl=sv-sc;
   document.getElementById('allocLegend').innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--hover-bg);border-radius:6px;">
-      <div style="width:10px;height:10px;border-radius:2px;background:#3b82f6;flex-shrink:0;"></div>
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
+      <div style="width:8px;height:8px;border-radius:2px;background:#3b82f6;flex-shrink:0;"></div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:12px;font-weight:600;">長期 <span style="font-weight:400;color:var(--muted);">${lPct}%</span></div>
-        <div style="font-size:11px;color:var(--muted);">$${fmt(lv)} ／ <span class="${pnlCls(lPnl)}">${pnlSign(lPnl)}$${fmt(lPnl)}</span></div>
+        <div style="font-size:11px;font-weight:600;">長期 <span style="font-weight:400;color:var(--muted);">${lPct}%</span>
+          <span class="${pnlCls(lPnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(lPnl)}$${fmt(lPnl)}</span></div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--hover-bg);border-radius:6px;">
-      <div style="width:10px;height:10px;border-radius:2px;background:#ef4444;flex-shrink:0;"></div>
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
+      <div style="width:8px;height:8px;border-radius:2px;background:#ef4444;flex-shrink:0;"></div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:12px;font-weight:600;">短期 <span style="font-weight:400;color:var(--muted);">${sPct}%</span></div>
-        <div style="font-size:11px;color:var(--muted);">$${fmt(sv)} ／ <span class="${pnlCls(sPnl)}">${pnlSign(sPnl)}$${fmt(sPnl)}</span></div>
+        <div style="font-size:11px;font-weight:600;">短期 <span style="font-weight:400;color:var(--muted);">${sPct}%</span>
+          <span class="${pnlCls(sPnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(sPnl)}$${fmt(sPnl)}</span></div>
       </div>
-    </div>
-    <div style="padding:8px 10px;background:var(--hover-bg);border-radius:6px;font-size:12px;color:var(--muted);">
-      總水位 <strong style="color:var(--text);">$${fmt(total)}</strong>
     </div>`;
+  const sign=pnlSign(totalPnl);
+  document.getElementById('allocStats').innerHTML = `
+    <div style="height:1px;background:var(--border);margin:8px 0;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+      ${smallStat('總投入成本','$'+fmt(totalCost))}
+      ${smallStat('總水位','$'+fmt(total))}
+      ${smallStat('未實現損益','<span class="'+pnlCls(totalPnl)+'">'+sign+'$'+fmt(totalPnl)+'</span>')}
+      ${smallStat('整體報酬率','<span class="'+pnlCls(totalPnl)+'">'+sign+fmtD(totalRet)+'%</span>')}
+    </div>`;
+}
+function smallStat(label,val) {
+  return `<div style="background:var(--hover-bg);border-radius:6px;padding:6px 8px;">
+    <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">${label}</div>
+    <div style="font-size:12px;font-weight:600;">${val}</div>
+  </div>`;
 }
 
 // ════════════════════════════════════════════════
@@ -1079,12 +1122,194 @@ function deleteTx(posId, txId) {
 }
 
 // ════════════════════════════════════════════════
+// TREEMAP
+// ════════════════════════════════════════════════
+const SECTOR_MAP = {
+  '0050':'ETF','0056':'ETF','00878':'ETF','00881':'ETF','00981a':'ETF','006208':'ETF',
+  '1519':'電機電子','2308':'電機電子',
+  '2313':'電子零組件','3017':'電子零組件','3441':'電子零組件','3665':'電子零組件','4979':'電子零組件','6617':'電子零組件',
+  '2317':'電腦及週邊','2330':'半導體','2454':'半導體',
+  '2345':'通信網路','6757':'觀光旅遊',
+};
+
+function tmColor(pnl, ret) {
+  const a=Math.abs(ret);
+  if (pnl>0) { if(a>=30)return'#991b1b'; if(a>=15)return'#b91c1c'; if(a>=5)return'#dc2626'; return'#f87171'; }
+  if (pnl<0) { if(a>=30)return'#14532d'; if(a>=15)return'#15803d'; if(a>=5)return'#16a34a'; return'#4ade80'; }
+  return '#94a3b8';
+}
+function tmFg(pnl, ret) {
+  const a=Math.abs(ret);
+  if (pnl>0) return a>=5?'#fff':'#7f1d1d';
+  if (pnl<0) return a>=5?'#fff':'#14532d';
+  return '#fff';
+}
+function squarify(items, x, y, w, h) {
+  if (!items.length) return [];
+  if (items.length===1) return [{...items[0], x, y, w, h}];
+  const total=items.reduce((s,i)=>s+i.v, 0);
+  let sum=0, split=0;
+  for (let i=0;i<items.length;i++) { sum+=items[i].v; split=i+1; if(sum>=total/2) break; }
+  const f=sum/total;
+  return w>=h
+    ? [...squarify(items.slice(0,split), x,     y, w*f,     h),
+       ...squarify(items.slice(split),   x+w*f, y, w*(1-f), h)]
+    : [...squarify(items.slice(0,split), x, y,     w, h*f),
+       ...squarify(items.slice(split),   x, y+h*f, w, h*(1-f))];
+}
+
+function renderTreemap() {
+  const container=document.getElementById('treemapContainer');
+  if (!container) return;
+  const W=container.clientWidth, H=container.clientHeight;
+  if (!W||!H||!positions.length) {
+    container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--subtle);font-size:13px;">尚無部位</div>';
+    return;
+  }
+  const totalValue=positions.reduce((s,p)=>s+calc(p).value,0);
+  if (!totalValue) return;
+  const GAP=2;
+  const items=positions
+    .map(p=>{ const {value,pnl,ret}=calc(p); return {v:value,name:p.stockName,code:p.stockCode,pnl,ret,pct:value/totalValue*100,sector:SECTOR_MAP[p.stockCode]||'其他'}; })
+    .filter(i=>i.v>0).sort((a,b)=>b.v-a.v);
+  const blocks=squarify(items, GAP/2, GAP/2, W-GAP, H-GAP);
+  container.innerHTML=blocks.map(b=>{
+    const bg=tmColor(b.pnl,b.ret), fg=tmFg(b.pnl,b.ret);
+    const showName=b.w>45&&b.h>28, showPct=b.w>55&&b.h>44;
+    const fs=Math.min(12,Math.max(9,b.w/9));
+    const info=JSON.stringify({name:b.name,pct:b.pct,pnl:b.pnl,ret:b.ret,sector:b.sector}).replace(/"/g,'&quot;');
+    return `<div style="position:absolute;left:${b.x.toFixed(1)}px;top:${b.y.toFixed(1)}px;width:${(b.w-GAP).toFixed(1)}px;height:${(b.h-GAP).toFixed(1)}px;background:${bg};border-radius:3px;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden;cursor:default;color:${fg};"
+      data-info="${info}" onmouseenter="showTmTip(event,this)" onmousemove="moveTmTip(event)" onmouseleave="hideTmTip()">
+      ${showName?`<div style="font-size:${fs}px;font-weight:600;text-align:center;padding:0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;">${b.name}</div>`:''}
+      ${showPct?`<div style="font-size:${Math.min(11,Math.max(9,b.w/10))}px;opacity:.85;">${b.ret>=0?'+':''}${b.ret.toFixed(1)}%</div>`:''}
+    </div>`;
+  }).join('');
+}
+function showTmTip(e,el) {
+  const d=JSON.parse(el.dataset.info||'{}');
+  const rc=d.ret>=0?'var(--profit)':d.ret<0?'var(--loss)':'var(--muted)';
+  const rs=d.ret>=0?'+':'', ps=d.pnl>=0?'+':'';
+  document.getElementById('treemapTooltip').innerHTML=`
+    <div style="font-weight:600;font-size:13px;margin-bottom:4px;">${d.name}</div>
+    <div style="color:var(--muted);font-size:11px;margin-bottom:8px;">${d.sector||'其他'}</div>
+    <div style="display:grid;grid-template-columns:auto auto;gap:3px 12px;font-size:12px;">
+      <span style="color:var(--muted);">佔比</span><span style="font-weight:600;">${(d.pct||0).toFixed(1)}%</span>
+      <span style="color:var(--muted);">損益</span><span style="font-weight:600;color:${rc};">${ps}${Math.round(d.pnl||0).toLocaleString()}</span>
+      <span style="color:var(--muted);">報酬率</span><span style="font-weight:600;color:${rc};">${rs}${(d.ret||0).toFixed(2)}%</span>
+    </div>`;
+  document.getElementById('treemapTooltip').style.display='block';
+  moveTmTip(e);
+}
+function moveTmTip(e) {
+  const tt=document.getElementById('treemapTooltip');
+  const x=e.clientX+14, y=e.clientY+14;
+  tt.style.left=Math.min(x,window.innerWidth-tt.offsetWidth-8)+'px';
+  tt.style.top =Math.min(y,window.innerHeight-tt.offsetHeight-8)+'px';
+}
+function hideTmTip() { document.getElementById('treemapTooltip').style.display='none'; }
+
+// ════════════════════════════════════════════════
+// CARD 2 — DAILY CHANGES
+// ════════════════════════════════════════════════
+async function fetchPriceInfo(code, market) {
+  const url=`https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${market||'tse'}_${code}.tw&json=1&delay=0`;
+  for (const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
+    try {
+      const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
+      const d=await res.json();
+      if (d.msgArray?.[0]) {
+        const info=d.msgArray[0];
+        const price=parseFloat(info.z!=='-'?info.z:info.y);
+        const prev =parseFloat(info.y);
+        if (!isNaN(price)&&price>0&&!isNaN(prev)&&prev>0)
+          return {price, prev, change:(price-prev)/prev*100};
+      }
+    } catch(e) {}
+  }
+  return null;
+}
+
+async function fetchAndRenderDaily() {
+  if (!positions.length) {
+    document.getElementById('dailyList').innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">尚無部位</div>';
+    return;
+  }
+  const unique={};
+  positions.forEach(p=>{ if(p.stockCode&&!unique[p.stockCode]) unique[p.stockCode]={name:p.stockName,market:p.market}; });
+  const tasks=[
+    fetchPriceInfo('t00','tse').then(r=>r?{code:'t00',name:'加權指數（大盤）',...r}:null),
+    ...Object.entries(unique).map(([code,{name,market}])=>
+      fetchPriceInfo(code,market).then(r=>r?{code,name,...r}:null))
+  ];
+  const results=(await Promise.all(tasks)).filter(Boolean);
+  const taiex=results.find(r=>r.code==='t00');
+  const stocks=results.filter(r=>r.code!=='t00').sort((a,b)=>Math.abs(b.change)-Math.abs(a.change));
+  const items=taiex?[taiex,...stocks]:stocks;
+  const now=new Date();
+  document.getElementById('dailyTime').textContent=
+    `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+  document.getElementById('dailyList').innerHTML=items.map((item,i)=>{
+    const sign=item.change>=0?'+':'';
+    const cls=item.change>0?'pos':item.change<0?'neg':'neu';
+    const isTaiex=item.code==='t00';
+    return `<div style="display:flex;align-items:center;padding:5px 0;${i<items.length-1?'border-bottom:1px solid var(--border);':''}${isTaiex?'margin-bottom:4px;':''}">
+      <div style="flex:1;font-size:13px;font-weight:${isTaiex?'600':'500'};">${item.name}</div>
+      <div class="${cls}" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-right:10px;">${sign}${item.change.toFixed(2)}%</div>
+      <div style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:52px;text-align:right;">${fmtD(item.price)}</div>
+    </div>`;
+  }).join('')||'<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">無法取得資料</div>';
+}
+
+// ════════════════════════════════════════════════
+// CARD 3 — YTD PERFORMANCE
+// ════════════════════════════════════════════════
+async function fetchAndRenderYTD() {
+  const el=document.getElementById('ytdContent');
+
+  // TAIEX YTD via Yahoo Finance proxy
+  let taiexYTD=null;
+  try {
+    const url=`https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=ytd`;
+    const res=await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,{cache:'no-store'});
+    const d=await res.json();
+    const closes=(d.chart?.result?.[0]?.indicators?.quote?.[0]?.close||[]).filter(c=>c!=null);
+    if (closes.length>=2) taiexYTD=(closes[closes.length-1]-closes[0])/closes[0]*100;
+  } catch(e) {}
+
+  // Portfolio return (cost-based)
+  const totalCost=positions.reduce((s,p)=>s+calc(p).cost,0);
+  const totalVal =positions.reduce((s,p)=>s+calc(p).value,0);
+  const portRet  =totalCost>0?(totalVal-totalCost)/totalCost*100:null;
+
+  function ytdBlock(label, val, note) {
+    if (val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
+    const sign=val>=0?'+':'';
+    const col=val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
+    return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${label}</div>
+      <div style="font-size:28px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${sign}${val.toFixed(2)}%</div>
+      ${note?`<div style="font-size:10px;color:var(--subtle);margin-top:4px;">${note}</div>`:''}
+    </div>`;
+  }
+
+  const diff=taiexYTD!==null&&portRet!==null?portRet-taiexYTD:null;
+  el.innerHTML=
+    ytdBlock('台股加權指數 YTD',taiexYTD,'Yahoo Finance / 今年第一個交易日至今')+
+    ytdBlock('持倉整體報酬率',portRet,'以各部位成本均價計算')+
+    (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
+      相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
+    </div>`:'');
+}
+
+// ════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════
 window.onload=()=>{
   loadState();
   render();
   setLastUpdated();
+  fetchAndRenderDaily();
+  fetchAndRenderYTD();
 };
 </script>
 </body>
