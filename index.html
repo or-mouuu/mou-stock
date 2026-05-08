@@ -1217,49 +1217,106 @@ function hideTmTip() { document.getElementById('treemapTooltip').style.display='
 // ════════════════════════════════════════════════
 // CARD 2 — DAILY CHANGES
 // ════════════════════════════════════════════════
-async function fetchPriceInfo(code, market) {
-  const url=`https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${market||'tse'}_${code}.tw&json=1&delay=0`;
-  for (const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
-    try {
-      const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
-      const d=await res.json();
-      if (d.msgArray?.[0]) {
-        const info=d.msgArray[0];
-        const price=parseFloat(info.z!=='-'?info.z:info.y);
-        const prev =parseFloat(info.y);
-        if (!isNaN(price)&&price>0) {
-          const change=(!isNaN(prev)&&prev>0)?(price-prev)/prev*100:null;
-          return {price, change};
-        }
-      }
-    } catch(e) {}
+function prevTradingDay(){
+  const d=new Date();
+  do{d.setDate(d.getDate()-1);}while(d.getDay()===0||d.getDay()===6);
+  return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function toRocDate(yyyymmdd){
+  return `${parseInt(yyyymmdd.slice(0,4))-1911}/${yyyymmdd.slice(4,6)}/${yyyymmdd.slice(6,8)}`;
+}
+
+function parseChangePct(changeStr,closePrice){
+  if(!changeStr||changeStr==='-'||changeStr==='X'||changeStr==='∅') return null;
+  const s=String(changeStr).replace(/,/g,'').trim();
+  const sign=s.includes('▼')?-1:1;
+  const val=parseFloat(s.replace(/[▲▼+\s]/g,''));
+  if(isNaN(val)) return null;
+  const prev=parseFloat(String(closePrice).replace(/,/g,''))-(sign*val);
+  if(!prev||prev<=0) return null;
+  return (sign*val)/prev*100;
+}
+
+async function fetchWithProxy(url){
+  for(const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]){
+    try{
+      const res=await fetch(u,{cache:'no-store'});
+      if(!res.ok) continue;
+      return await res.json();
+    }catch(e){}
   }
   return null;
 }
 
-async function fetchAndRenderDaily() {
-  if (!positions.length) {
+async function fetchTAIEXFromHistory(dateStr){
+  const key=`taiex_hist_${dateStr}`;
+  const cached=sessionStorage.getItem(key);
+  if(cached) return parseFloat(cached);
+  const d=await fetchWithProxy(`https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=${dateStr}`);
+  if(d?.stat==='OK'&&d.data?.length){
+    const last=d.data[d.data.length-1];
+    const v=parseFloat((last[1]||'').replace(/,/g,''));
+    if(!isNaN(v)&&v>0){sessionStorage.setItem(key,String(v));return v;}
+  }
+  return null;
+}
+
+async function fetchStockDayChange(code,market){
+  const cacheKey=`daily_${code}_${todayStr()}`;
+  const cached=sessionStorage.getItem(cacheKey);
+  if(cached) return JSON.parse(cached);
+  let result=null;
+  if(market==='otc'){
+    const rocDate=toRocDate(todayStr());
+    const url=`https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${rocDate}&stkno=${code}`;
+    const d=await fetchWithProxy(url);
+    if(d?.aaData?.length){
+      const last=d.aaData[d.aaData.length-1];
+      const close=parseFloat((last[6]||'').replace(/,/g,''));
+      if(!isNaN(close)&&close>0) result={price:close,change:parseChangePct(last[7],close)};
+    }
+  } else {
+    const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${todayStr()}&stockNo=${code}`;
+    const d=await fetchWithProxy(url);
+    if(d?.stat==='OK'&&d.data?.length){
+      const last=d.data[d.data.length-1];
+      const close=parseFloat((last[6]||'').replace(/,/g,''));
+      if(!isNaN(close)&&close>0) result={price:close,change:parseChangePct(last[7],close)};
+    }
+  }
+  if(result) sessionStorage.setItem(cacheKey,JSON.stringify(result));
+  return result;
+}
+
+async function fetchAndRenderDaily(){
+  if(!positions.length){
     document.getElementById('dailyList').innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">尚無部位</div>';
     return;
   }
   const unique={};
-  positions.forEach(p=>{ if(p.stockCode&&!unique[p.stockCode]) unique[p.stockCode]={name:p.stockName,market:p.market}; });
-  const tasks=[
-    fetchPriceInfo('t00','tse').then(r=>r?{code:'t00',name:'加權指數（大盤）',...r}:null),
-    ...Object.entries(unique).map(([code,{name,market}])=>
-      fetchPriceInfo(code,market).then(r=>r?{code,name,...r}:null))
-  ];
-  const results=(await Promise.all(tasks)).filter(Boolean);
-  // Store in global map for table use, then re-render table
-  results.filter(r=>r.code!=='t00').forEach(r=>{ dailyChanges[r.code]={change:r.change,price:r.price}; });
+  positions.forEach(p=>{if(p.stockCode&&!unique[p.stockCode]) unique[p.stockCode]={name:p.stockName,market:p.market};});
+  const today=todayStr(), prevDay=prevTradingDay();
+  const [[taiexToday,taiexPrev],stockResults]=await Promise.all([
+    Promise.all([fetchTAIEXFromHistory(today),fetchTAIEXFromHistory(prevDay)]),
+    Promise.all(Object.entries(unique).map(([code,{name,market}])=>
+      fetchStockDayChange(code,market).then(r=>r?{code,name,...r}:null)
+    )).then(r=>r.filter(Boolean))
+  ]);
+  const taiexCurrent=taiexToday||taiexPrev;
+  const taiexChange=(taiexToday&&taiexPrev)?((taiexToday-taiexPrev)/taiexPrev*100):null;
+  stockResults.forEach(r=>{
+    dailyChanges[r.code]={change:r.change,price:r.price};
+    if(r.price>0) prices[r.code]={price:r.price,updatedAt:new Date().toISOString()};
+  });
   renderTable();
-  const taiex=results.find(r=>r.code==='t00');
-  const stocks=results.filter(r=>r.code!=='t00').sort((a,b)=>Math.abs(b.change||0)-Math.abs(a.change||0));
-  const items=taiex?[taiex,...stocks]:stocks;
+  const taiexItem=taiexCurrent?{code:'t00',name:'加權指數（大盤）',price:taiexCurrent,change:taiexChange}:null;
+  const stocks=stockResults.sort((a,b)=>Math.abs(b.change||0)-Math.abs(a.change||0));
+  const items=taiexItem?[taiexItem,...stocks]:stocks;
   const now=new Date();
   document.getElementById('dailyTime').textContent=
     `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
-  document.getElementById('dailyList').innerHTML=items.map((item,i)=>{
+  document.getElementById('dailyList').innerHTML=items.length?items.map((item,i)=>{
     const ch=item.change;
     const sign=ch!=null&&ch>=0?'+':'';
     const cls=ch!=null?(ch>0?'pos':ch<0?'neg':'neu'):'neu';
@@ -1270,46 +1327,60 @@ async function fetchAndRenderDaily() {
       <div class="${cls}" style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;margin-right:10px;">${chStr}</div>
       <div style="font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:52px;text-align:right;">${fmtD(item.price)}</div>
     </div>`;
-  }).join('')||'<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">無法取得資料</div>';
+  }).join(''):'<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">無法取得資料</div>';
 }
 
 // ════════════════════════════════════════════════
 // CARD 3 — YTD PERFORMANCE
 // ════════════════════════════════════════════════
-async function fetchAndRenderYTD() {
+async function fetchJan2Price(code,market){
+  const key=`jan2p_${code}`;
+  const cached=localStorage.getItem(key);
+  if(cached){const v=parseFloat(cached);if(!isNaN(v)&&v>0) return v;}
+  let price=null;
+  if(market==='otc'){
+    const url=`https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=115/01/01&stkno=${code}`;
+    const d=await fetchWithProxy(url);
+    if(d?.aaData?.length){
+      const row=d.aaData[0];
+      price=parseFloat((row[6]||'').replace(/,/g,''));
+    }
+  } else {
+    const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=20260102&stockNo=${code}`;
+    const d=await fetchWithProxy(url);
+    if(d?.stat==='OK'&&d.data?.length){
+      const row=d.data[0];
+      price=parseFloat((row[6]||'').replace(/,/g,''));
+    }
+  }
+  if(!isNaN(price)&&price>0){localStorage.setItem(key,String(price));return price;}
+  return null;
+}
+
+async function fetchAndRenderYTD(){
   const el=document.getElementById('ytdContent');
-
-  // Current TAIEX via mis.twse.com.tw
-  let taiexNow=null;
-  const tInfo=await fetchPriceInfo('t00','tse');
-  if (tInfo) taiexNow=tInfo.price;
-
-  // Jan 2, 2026 TAIEX close — cached in localStorage, else fetch from TWSE
   const JAN2_KEY='taiex_jan2_2026';
   let taiexJan2=parseFloat(localStorage.getItem(JAN2_KEY)||'');
-  if (isNaN(taiexJan2)||taiexJan2<=0) {
-    try {
-      const url='https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=20260102';
-      for (const u of [url,`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
-        const res=await fetch(u,{cache:'force-cache'}); if(!res.ok) continue;
-        const d=await res.json();
-        if (d.stat==='OK'&&d.data?.length) {
-          const last=d.data[d.data.length-1];
-          const v=parseFloat((last[1]||'').replace(/,/g,''));
-          if (!isNaN(v)&&v>0){taiexJan2=v;localStorage.setItem(JAN2_KEY,String(v));break;}
-        }
-      }
-    } catch(e){}
+  const [taiexNowRaw]=await Promise.all([
+    fetchTAIEXFromHistory(todayStr()),
+    (async()=>{if(isNaN(taiexJan2)||taiexJan2<=0){const v=await fetchTAIEXFromHistory('20260102');if(v){taiexJan2=v;localStorage.setItem(JAN2_KEY,String(v));}}})()
+  ]);
+  let taiexNow=taiexNowRaw;
+  if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
+  const taiexYTD=(taiexNow&&taiexJan2>0)?(taiexNow-taiexJan2)/taiexJan2*100:null;
+  let portYTD=null;
+  if(positions.length){
+    const jan2Prices=await Promise.all(positions.map(p=>p.stockCode?fetchJan2Price(p.stockCode,p.market):Promise.resolve(null)));
+    let jan2Val=0,curVal=0;
+    positions.forEach((p,i)=>{
+      const jp=jan2Prices[i];
+      const cp=prices[p.stockCode]?.price||calc(p).price;
+      if(jp&&cp&&p.shares>0){jan2Val+=p.shares*jp;curVal+=p.shares*cp;}
+    });
+    if(jan2Val>0) portYTD=(curVal-jan2Val)/jan2Val*100;
   }
-  const taiexYTD=(taiexNow&&taiexJan2)?(taiexNow-taiexJan2)/taiexJan2*100:null;
-
-  // Portfolio return (cost-based)
-  const totalCost=positions.reduce((s,p)=>s+calc(p).cost,0);
-  const totalVal =positions.reduce((s,p)=>s+calc(p).value,0);
-  const portRet  =totalCost>0?(totalVal-totalCost)/totalCost*100:null;
-
-  function ytdBlock(label,val,note) {
-    if (val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
+  function ytdBlock(label,val,note){
+    if(val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
     const sign=val>=0?'+':'';
     const col=val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
     return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
@@ -1318,11 +1389,10 @@ async function fetchAndRenderYTD() {
       ${note?`<div style="font-size:10px;color:var(--subtle);margin-top:4px;">${note}</div>`:''}
     </div>`;
   }
-
-  const diff=taiexYTD!==null&&portRet!==null?portRet-taiexYTD:null;
+  const diff=taiexYTD!==null&&portYTD!==null?portYTD-taiexYTD:null;
   el.innerHTML=
     ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2026/1/2 收盤至今')+
-    ytdBlock('持倉整體報酬率',portRet,'以各部位成本均價計算')+
+    ytdBlock('持倉整體 YTD',portYTD,'持股現值 vs 2026/1/2 收盤估算')+
     (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
       相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
     </div>`:'');
