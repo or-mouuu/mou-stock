@@ -465,6 +465,7 @@ let splitId    = null;
 let splitSubRows = [];
 let importRows     = [];
 let importIsDetail = false;
+let importIsUSBrokerage = false;
 let txTargetId   = null;  // position id for current transaction modal
 let allocChart   = null;
 let dailyChanges = {};  // { stockCode: { change, price } }
@@ -552,6 +553,33 @@ function parseCSVLine(line) {
   }
   fields.push(cur); return fields;
 }
+function parseUSBrokerageCSV(text) {
+  const map = {};
+  for (const line of text.trim().split(/\r?\n/).slice(1)) {
+    const f = parseCSVLine(line.trim());
+    if (f.length < 9 || !f[0].trim()) continue;
+    const ticker = f[0].trim();
+    if (ticker.startsWith('總') || !f[7].includes('美元')) continue;
+    const name     = f[1].trim() || ticker;
+    const csvPrice = parseFloat(f[2].replace(/,/g,''));
+    const shares   = parseFloat(f[3].replace(/,/g,''));
+    const avgCost  = parseFloat(f[8].replace(/,/g,''));
+    if (isNaN(shares)||shares<=0||isNaN(avgCost)) continue;
+    if (map[ticker]) {
+      const prev = map[ticker];
+      const total = prev.shares + shares;
+      map[ticker].avgCost = (prev.shares*prev.avgCost + shares*avgCost) / total;
+      map[ticker].shares  = total;
+      if (!isNaN(csvPrice)&&csvPrice>0) map[ticker].csvPrice = csvPrice;
+    } else {
+      map[ticker] = { stockCode:ticker, stockName:name, shares, avgCost,
+                      csvPrice:isNaN(csvPrice)?null:csvPrice,
+                      market:'us', currency:'USD', type:'美股', transactions:[] };
+    }
+  }
+  return Object.values(map);
+}
+
 function parseKGI(text) {
   const rows=[];
   for (const line of text.trim().split(/\r?\n/).slice(1)) {
@@ -817,8 +845,14 @@ function handleCSVFile(input) {
   reader.onload=e=>{
     const text=e.target.result;
     const firstLine=text.split(/\r?\n/)[0]||'';
-    importIsDetail = firstLine.includes('成交日期');
-    importRows = importIsDetail ? parseKGIDetail(text) : parseKGI(text);
+    if (firstLine.startsWith('代號,')&&firstLine.includes('幣別')) {
+      importIsUSBrokerage=true; importIsDetail=false;
+      importRows=parseUSBrokerageCSV(text);
+    } else {
+      importIsUSBrokerage=false;
+      importIsDetail=firstLine.includes('成交日期');
+      importRows=importIsDetail ? parseKGIDetail(text) : parseKGI(text);
+    }
     showImportStep2();
   };
   reader.readAsText(file,'UTF-8');
@@ -826,14 +860,20 @@ function handleCSVFile(input) {
 function showImportStep2() {
   document.getElementById('importStep1').style.display='none';
   document.getElementById('importStep2').style.display='block';
-  document.getElementById('importStep2Hint').textContent = importIsDetail
-    ? '已偵測到明細格式，每筆買入紀錄將自動建立交易記錄。確認代號及類型後匯入。'
-    : '確認代號及類型。同一股票不同成本請匯入後使用「拆分」功能。';
+  document.getElementById('importStep2Hint').textContent = importIsUSBrokerage
+    ? '已偵測到複委託格式，類型預設為「美股」，多筆相同代號自動合併加權平均。'
+    : importIsDetail
+      ? '已偵測到明細格式，每筆買入紀錄將自動建立交易記錄。確認代號及類型後匯入。'
+      : '確認代號及類型。同一股票不同成本請匯入後使用「拆分」功能。';
   renderImportTable();
 }
 function renderImportTable() {
   const thead = document.querySelector('#importModal thead tr');
-  if (importIsDetail) {
+  if (importIsUSBrokerage) {
+    thead.innerHTML = `
+      <th style="text-align:left;">代號</th>
+      <th>股數</th><th>成本均價（USD）</th><th>現價（USD）</th><th>類型</th><th></th>`;
+  } else if (importIsDetail) {
     thead.innerHTML = `
       <th style="text-align:left;">股票名稱</th>
       <th>股數</th><th>加權均價</th><th>交易筆數</th><th>日期範圍</th>
@@ -846,6 +886,20 @@ function renderImportTable() {
   }
 
   document.getElementById('importTableBody').innerHTML = importRows.map((r,i)=>{
+    if (importIsUSBrokerage) {
+      const sharesStr = Number.isInteger(r.shares) ? r.shares.toLocaleString() : r.shares.toFixed(5).replace(/\.?0+$/,'');
+      return `<tr>
+        <td style="text-align:left;"><span style="font-weight:600;">${r.stockCode}</span><br>
+          <span style="font-size:11px;color:var(--muted);">${r.stockName}</span></td>
+        <td>${sharesStr}</td>
+        <td>$${fmtD(r.avgCost)}</td>
+        <td>${r.csvPrice!=null?'$'+fmtD(r.csvPrice):'—'}</td>
+        <td><select id="imp-type-${i}" style="width:68px;">
+          <option value="美股" selected>美股</option>
+        </select></td>
+        <td><button class="btn btn-danger btn-sm" onclick="importRows.splice(${i},1);renderImportTable()">移除</button></td>
+      </tr>`;
+    }
     const base = `
       <td><input type="text" value="${r.stockCode}" id="imp-code-${i}" placeholder="代號" style="width:72px;"></td>
       <td><select id="imp-mkt-${i}" style="width:64px;">
@@ -880,19 +934,30 @@ function renderImportTable() {
   }).join('');
 }
 function confirmImport() {
-  const newPos=importRows.map((r,i)=>({
-    id:uid(), stockCode:document.getElementById(`imp-code-${i}`).value.trim(),
-    stockName:r.stockName, market:document.getElementById(`imp-mkt-${i}`).value,
-    type:document.getElementById(`imp-type-${i}`).value,
-    shares:r.shares, avgCost:r.avgCost, currentPrice:r.csvPrice, notes:'',
-    transactions: importIsDetail ? (r.transactions||[]) : [],
-  }));
+  const newPos=importRows.map((r,i)=>{
+    if (importIsUSBrokerage) {
+      return {
+        id:uid(), stockCode:r.stockCode, stockName:r.stockName,
+        market:'us', currency:'USD',
+        type:document.getElementById(`imp-type-${i}`).value,
+        shares:r.shares, avgCost:r.avgCost, currentPrice:r.csvPrice, notes:'',
+        transactions:[],
+      };
+    }
+    return {
+      id:uid(), stockCode:document.getElementById(`imp-code-${i}`).value.trim(),
+      stockName:r.stockName, market:document.getElementById(`imp-mkt-${i}`).value,
+      type:document.getElementById(`imp-type-${i}`).value,
+      shares:r.shares, avgCost:r.avgCost, currentPrice:r.csvPrice, notes:'',
+      transactions: importIsDetail ? (r.transactions||[]) : [],
+    };
+  });
   newPos.forEach(p=>{
     saveTypePref(p.stockName,p.type);
-    if (p.currentPrice&&p.stockCode) prices[p.stockCode]={price:p.currentPrice,updatedAt:new Date().toISOString()};
+    if (p.currentPrice!=null&&p.stockCode) prices[p.stockCode]={price:p.currentPrice,updatedAt:new Date().toISOString()};
     positions.push(p);
   });
-  const missing=newPos.filter(p=>!p.stockCode);
+  const missing=newPos.filter(p=>!p.stockCode&&!importIsUSBrokerage);
   if (missing.length) toast(`已匯入，${missing.map(p=>p.stockName).join('、')} 未填代號，請事後編輯補上。`,'warn');
   else toast(`成功匯入 ${newPos.length} 筆部位`);
   saveState(); hideImportModal(); render();
@@ -1350,11 +1415,36 @@ async function fetchUSDTWDRate(){
 async function fetchYahooPrice(ticker){
   const key=`yahoo_${ticker}_${todayStr()}`;
   const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
-  const d=await fetchWithProxy(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`);
-  const meta=d?.chart?.result?.[0]?.meta;
-  if(meta?.regularMarketPrice){
-    const result={price:meta.regularMarketPrice, change: meta.chartPreviousClose>0?(meta.regularMarketPrice-meta.chartPreviousClose)/meta.chartPreviousClose*100:null};
-    sessionStorage.setItem(key,JSON.stringify(result)); return result;
+  const baseUrls=[
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
+  ];
+  for(const base of baseUrls){
+    const candidates=[
+      base,
+      `https://corsproxy.io/?${encodeURIComponent(base)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`,
+    ];
+    for(const u of candidates){
+      try{
+        const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
+        const d=await res.json();
+        // v7 quote format
+        const q=d?.quoteResponse?.result?.[0];
+        if(q?.regularMarketPrice){
+          const r={price:q.regularMarketPrice, change:q.regularMarketChangePercent??null};
+          sessionStorage.setItem(key,JSON.stringify(r)); return r;
+        }
+        // v8 chart format
+        const meta=d?.chart?.result?.[0]?.meta;
+        if(meta?.regularMarketPrice){
+          const r={price:meta.regularMarketPrice, change:meta.chartPreviousClose>0?(meta.regularMarketPrice-meta.chartPreviousClose)/meta.chartPreviousClose*100:null};
+          sessionStorage.setItem(key,JSON.stringify(r)); return r;
+        }
+      }catch(e){}
+    }
   }
   return null;
 }
