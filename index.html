@@ -137,11 +137,11 @@
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
 
     <!-- Card 1: Portfolio allocation -->
-    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
-      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">資金水位</div>
-      <div id="allocBar" style="height:28px;border-radius:6px;overflow:hidden;display:flex;gap:2px;flex-shrink:0;background:var(--border);margin-bottom:10px;"></div>
-      <div id="allocLegend" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;"></div>
-      <div id="allocStats" style="flex-shrink:0;"></div>
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;overflow-y:auto;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;flex-shrink:0;">資金水位</div>
+      <div id="allocTW" style="flex-shrink:0;"></div>
+      <div id="allocDivider" style="height:1px;background:var(--border);margin:8px 0;flex-shrink:0;"></div>
+      <div id="allocUS" style="flex-shrink:0;"></div>
     </div>
 
     <!-- Card 2: Daily changes -->
@@ -157,13 +157,17 @@
 
     <!-- Card 3: YTD performance -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
-      <div style="display:flex;align-items:center;margin-bottom:10px;flex-shrink:0;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0;flex-wrap:wrap;">
         <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">年初至今（YTD）</div>
-        <div style="margin-left:auto;display:flex;align-items:center;gap:5px;">
-          <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益</span>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:5px;flex-wrap:wrap;">
+          <span style="font-size:10px;color:var(--muted);white-space:nowrap;">台股已實現</span>
           <input id="realizedPnlInput" type="number" placeholder="0"
-            style="width:80px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+            style="width:66px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
             oninput="localStorage.setItem('realized_pnl_v1',this.value||'0');fetchAndRenderYTD()">
+          <span style="font-size:10px;color:var(--muted);white-space:nowrap;">美股已實現(TWD)</span>
+          <input id="realizedPnlUSInput" type="number" placeholder="0"
+            style="width:66px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+            oninput="localStorage.setItem('realized_pnl_us_v1',this.value||'0');fetchAndRenderYTD()">
         </div>
       </div>
       <div id="ytdContent" style="flex:1;overflow-y:auto;min-height:0;">
@@ -774,50 +778,57 @@ function renderCharts() {
   let ev=0,ec=0,lv=0,lc=0,sv=0,sc=0,gv=0,gc=0,uv=0,uc=0;
   positions.forEach(p => {
     const {value,cost}=calc(p);
-    if (p.type==='ETF')      { ev+=value; ec+=cost; }
-    else if (p.type==='長期') { lv+=value; lc+=cost; }
-    else if (p.type==='黃金') { gv+=value; gc+=cost; }
-    else if (p.type==='美股') { uv+=value; uc+=cost; }
-    else                      { sv+=value; sc+=cost; }
+    if (p.market==='us'||p.type==='美股') { uv+=value; uc+=cost; }
+    else if (p.type==='ETF')      { ev+=value; ec+=cost; }
+    else if (p.type==='長期')     { lv+=value; lc+=cost; }
+    else if (p.type==='黃金')     { gv+=value; gc+=cost; }
+    else                           { sv+=value; sc+=cost; }
   });
-  const total=ev+lv+sv+gv+uv, totalCost=ec+lc+sc+gc+uc;
-  const totalPnl=total-totalCost;
-  const totalRet=totalCost>0?(totalPnl/totalCost)*100:0;
+  const twTotal=ev+lv+sv+gv, twCost=ec+lc+sc+gc;
+  const usTotal=uv, usCost=uc;
 
-  // Stacked bar (CSS flex)
-  const barEl=document.getElementById('allocBar');
-  const segs=[{v:ev,c:'#0ea5e9'},{v:lv,c:'#3b82f6'},{v:gv,c:'#f59e0b'},{v:uv,c:'#8b5cf6'},{v:sv,c:'#ef4444'}].filter(s=>s.v>0);
-  barEl.innerHTML=total?segs.map(s=>`<div style="flex:${s.v};background:${s.c};height:100%;"></div>`).join(''):'';
+  function renderSection(id, types, total, totalCost, sectionLabel) {
+    const el=document.getElementById(id);
+    if (!el) return;
+    if (!total) { el.innerHTML=`<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${sectionLabel}</div><div style="color:var(--subtle);font-size:12px;padding:4px 0;">無部位</div>`; return; }
+    const pnl=total-totalCost;
+    const ret=totalCost>0?(pnl/totalCost)*100:0;
+    const sign=pnlSign(pnl);
+    const bar=types.map(t=>`<div style="flex:${t.v};background:${t.c};height:100%;"></div>`).join('');
+    const legend=types.map(x=>{
+      const pct=(x.v/total*100).toFixed(1);
+      const xpnl=x.v-x.cost;
+      return `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--hover-bg);border-radius:6px;">
+        <div style="width:8px;height:8px;border-radius:2px;background:${x.c};flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;font-size:11px;font-weight:600;">${x.label}
+          <span style="font-weight:400;color:var(--muted);">${pct}%</span>
+          <span class="${pnlCls(xpnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(xpnl)}$${fmt(xpnl)}</span>
+        </div></div>`;
+    }).join('');
+    el.innerHTML=`
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px;">${sectionLabel}</div>
+      <div style="height:20px;border-radius:4px;overflow:hidden;display:flex;gap:2px;background:var(--border);margin-bottom:6px;">${bar}</div>
+      <div style="display:flex;flex-direction:column;gap:3px;margin-bottom:6px;">${legend}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+        ${smallStat('成本','$'+fmt(totalCost))}
+        ${smallStat('現值','$'+fmt(total))}
+        ${smallStat('損益','<span class="'+pnlCls(pnl)+'">'+sign+'$'+fmt(pnl)+'</span>')}
+        ${smallStat('報酬率','<span class="'+pnlCls(pnl)+'">'+sign+fmtD(ret)+'%</span>')}
+      </div>`;
+  }
 
-  // Legend rows
-  const types=[
+  const twTypes=[
     {label:'ETF',  v:ev, cost:ec, c:'#0ea5e9'},
     {label:'長期', v:lv, cost:lc, c:'#3b82f6'},
     {label:'黃金', v:gv, cost:gc, c:'#f59e0b'},
-    {label:'美股', v:uv, cost:uc, c:'#8b5cf6'},
     {label:'短期', v:sv, cost:sc, c:'#ef4444'},
-  ];
-  document.getElementById('allocLegend').innerHTML=types.filter(x=>x.v>0).map(x=>{
-    const pct=total>0?(x.v/total*100).toFixed(1):'0.0';
-    const pnl=x.v-x.cost;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
-      <div style="width:8px;height:8px;border-radius:2px;background:${x.c};flex-shrink:0;"></div>
-      <div style="flex:1;min-width:0;font-size:11px;font-weight:600;">${x.label}
-        <span style="font-weight:400;color:var(--muted);">${pct}%</span>
-        <span class="${pnlCls(pnl)}" style="margin-left:6px;font-size:10px;">${pnlSign(pnl)}$${fmt(pnl)}</span>
-      </div>
-    </div>`;
-  }).join('');
+  ].filter(x=>x.v>0);
+  const usTypes=[{label:'美股', v:uv, cost:uc, c:'#8b5cf6'}].filter(x=>x.v>0);
 
-  const sign=pnlSign(totalPnl);
-  document.getElementById('allocStats').innerHTML=`
-    <div style="height:1px;background:var(--border);margin:8px 0;"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-      ${smallStat('總投入成本','$'+fmt(totalCost))}
-      ${smallStat('總水位','$'+fmt(total))}
-      ${smallStat('未實現損益','<span class="'+pnlCls(totalPnl)+'">'+sign+'$'+fmt(totalPnl)+'</span>')}
-      ${smallStat('整體報酬率','<span class="'+pnlCls(totalPnl)+'">'+sign+fmtD(totalRet)+'%</span>')}
-    </div>`;
+  renderSection('allocTW', twTypes, twTotal, twCost, '台股');
+  renderSection('allocUS', usTypes, usTotal, usCost, '美股');
+  const div=document.getElementById('allocDivider');
+  if (div) div.style.display=(twTotal>0&&usTotal>0)?'':'none';
 }
 function smallStat(label,val) {
   return `<div style="background:var(--hover-bg);border-radius:6px;padding:6px 8px;">
@@ -1564,6 +1575,26 @@ async function fetchAndRenderDaily(){
 // ════════════════════════════════════════════════
 // CARD 3 — YTD PERFORMANCE
 // ════════════════════════════════════════════════
+async function fetchDec31PriceUS(ticker) {
+  if (!ticker) return null;
+  const key=`dec31p_us_2025_${ticker}`;
+  const cached=localStorage.getItem(key);
+  if (cached) { const v=parseFloat(cached); if(!isNaN(v)&&v>0) return v; }
+  // Dec 30–31, 2025 window (Unix seconds UTC)
+  const period1=1735516800, period2=1735689600;
+  const base=`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?period1=${period1}&period2=${period2}&interval=1d`;
+  const candidates=[base,`https://corsproxy.io/?${encodeURIComponent(base)}`,`https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`];
+  for (const u of candidates) {
+    try {
+      const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
+      const d=await res.json();
+      const closes=d?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+      if (closes?.length) { const p=closes.filter(Boolean).pop(); if(p&&p>0){localStorage.setItem(key,String(p));return p;} }
+    } catch(e) {}
+  }
+  return null;
+}
+
 async function fetchDec31Price(code, market) {
   if (!code || market === 'us' || market === 'gold') return null;
   const key = `dec31p_2025_${code}`;
@@ -1585,49 +1616,92 @@ async function fetchAndRenderYTD(){
   const el=document.getElementById('ytdContent');
   const BASE_KEY='taiex_dec31_2025';
   let taiexBase=parseFloat(localStorage.getItem(BASE_KEY)||'');
-  const [taiexNowRaw]=await Promise.all([
+  const rate=usdTwdRate||32;
+
+  // Fetch TAIEX + VTI in parallel
+  const [taiexNowRaw,,vtiNowData,vtiBase]=await Promise.all([
     fetchTAIEXFromHistory(todayStr()),
-    (async()=>{if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}})()
+    (async()=>{if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}})(),
+    fetchYahooPrice('VTI'),
+    fetchDec31PriceUS('VTI'),
   ]);
   let taiexNow=taiexNowRaw;
   if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
   const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:null;
-  const realizedPnl=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
-  let portYTD=null;
-  if(positions.length){
-    const dec31Prices=await Promise.all(positions.map(p=>fetchDec31Price(p.stockCode,p.market)));
-    let ytdBase=0,ytdCurrent=0;
-    positions.forEach((p,i)=>{
+  const vtiNow=vtiNowData?.price;
+  const vtiYTD=(vtiNow&&vtiBase>0)?(vtiNow-vtiBase)/vtiBase*100:null;
+
+  const realizedTW=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
+  const realizedUS=parseFloat(localStorage.getItem('realized_pnl_us_v1')||'0')||0;
+
+  const twPos=positions.filter(p=>p.market!=='us'&&p.type!=='美股');
+  const usPos=positions.filter(p=>p.market==='us'||p.type==='美股');
+
+  // TW portfolio YTD
+  let twYTD=null;
+  if(twPos.length){
+    const dp31=await Promise.all(twPos.map(p=>fetchDec31Price(p.stockCode,p.market)));
+    let ytdBase=0,ytdCur=0;
+    twPos.forEach((p,i)=>{
       const {value}=calc(p);
       const txs=p.transactions||[];
-      const oldShares=txs.filter(tx=>tx.action==='buy'&&tx.date<='2025-12-31').reduce((s,tx)=>s+(tx.shares||0),0);
-      const new2026Cost=txs.filter(tx=>tx.action==='buy'&&tx.date>='2026-01-01').reduce((s,tx)=>s+tx.shares*tx.price*(p.currency==='USD'?(usdTwdRate||32):1),0);
-      // If no transaction history, treat all shares as pre-2026
-      const effectiveOldShares=txs.length?oldShares:p.shares;
-      const dp=dec31Prices[i];
-      const oldBase=dp&&effectiveOldShares>0?effectiveOldShares*dp:(!dp&&effectiveOldShares>0?effectiveOldShares*p.avgCost*(p.currency==='USD'?(usdTwdRate||32):1):0);
-      const base=oldBase+new2026Cost;
-      if(base>0){ytdBase+=base;ytdCurrent+=value;}
+      const oldSh=txs.length?txs.filter(t=>t.action==='buy'&&t.date<='2025-12-31').reduce((s,t)=>s+(t.shares||0),0):p.shares;
+      const new26=txs.filter(t=>t.action==='buy'&&t.date>='2026-01-01').reduce((s,t)=>s+t.shares*t.price,0);
+      const d=dp31[i];
+      const base=(d&&oldSh>0?oldSh*d:(!d&&oldSh>0?oldSh*p.avgCost:0))+new26;
+      if(base>0){ytdBase+=base;ytdCur+=value;}
     });
-    if(ytdBase>0) portYTD=(ytdCurrent-ytdBase+realizedPnl)/ytdBase*100;
+    if(ytdBase>0) twYTD=(ytdCur-ytdBase+realizedTW)/ytdBase*100;
   }
+
+  // US portfolio YTD
+  let usYTD=null;
+  if(usPos.length){
+    const dp31us=await Promise.all(usPos.map(p=>fetchDec31PriceUS(p.stockCode)));
+    let ytdBase=0,ytdCur=0;
+    usPos.forEach((p,i)=>{
+      const {value}=calc(p);
+      const txs=p.transactions||[];
+      const oldSh=txs.length?txs.filter(t=>t.action==='buy'&&t.date<='2025-12-31').reduce((s,t)=>s+(t.shares||0),0):p.shares;
+      const new26=txs.filter(t=>t.action==='buy'&&t.date>='2026-01-01').reduce((s,t)=>s+t.shares*t.price*rate,0);
+      const d=dp31us[i];
+      const base=(d&&oldSh>0?oldSh*d*rate:(!d&&oldSh>0?oldSh*p.avgCost*rate:0))+new26;
+      if(base>0){ytdBase+=base;ytdCur+=value;}
+    });
+    if(ytdBase>0) usYTD=(ytdCur-ytdBase+realizedUS)/ytdBase*100;
+  }
+
   function ytdBlock(label,val,note){
-    if(val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
+    if(val===null) return `<div style="padding:8px 10px;background:var(--hover-bg);border-radius:8px;margin-bottom:5px;"><div style="font-size:10px;color:var(--muted);margin-bottom:2px;">${label}</div><div style="color:var(--subtle);font-size:12px;">無法取得</div></div>`;
     const sign=val>=0?'+':'';
     const col=val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
-    return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${label}</div>
-      <div style="font-size:28px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${sign}${val.toFixed(2)}%</div>
-      ${note?`<div style="font-size:10px;color:var(--subtle);margin-top:4px;">${note}</div>`:''}
+    return `<div style="padding:8px 10px;background:var(--hover-bg);border-radius:8px;margin-bottom:5px;">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:3px;">${label}</div>
+      <div style="font-size:22px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${sign}${val.toFixed(2)}%</div>
+      ${note?`<div style="font-size:10px;color:var(--subtle);margin-top:2px;">${note}</div>`:''}
     </div>`;
   }
-  const diff=taiexYTD!==null&&portYTD!==null?portYTD-taiexYTD:null;
-  el.innerHTML=
-    ytdBlock('台股加權指數 YTD',taiexYTD,'TWSE / 2025/12/31 收盤為基準')+
-    ytdBlock('持倉整體 YTD',portYTD,'持股現值 vs 2025/12/31 收盤估算')+
-    (diff!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
-      相對大盤 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
-    </div>`:'');
+  function diffLine(port,bench){
+    if(port===null||bench===null) return '';
+    const d=port-bench;
+    return `<div style="padding:6px 10px;background:var(--hover-bg);border-radius:8px;font-size:11px;color:var(--muted);margin-bottom:5px;">
+      超額 <span class="${d>=0?'pos':'neg'}" style="font-weight:700;font-size:13px;">${d>=0?'+':''}${d.toFixed(2)}%</span>
+    </div>`;
+  }
+
+  const twSection=`<div>
+    <div style="font-size:10px;font-weight:700;color:var(--long-fg);background:var(--long-bg);border-radius:4px;padding:2px 7px;display:inline-block;margin-bottom:6px;">台股</div>
+    ${ytdBlock('持倉 YTD',twYTD,'Dec 31 收盤為基準')}
+    ${ytdBlock('台股加權指數',taiexYTD,'TWSE')}
+    ${diffLine(twYTD,taiexYTD)}
+  </div>`;
+  const usSection=`<div>
+    <div style="font-size:10px;font-weight:700;color:var(--us-fg);background:var(--us-bg);border-radius:4px;padding:2px 7px;display:inline-block;margin-bottom:6px;">美股</div>
+    ${ytdBlock('持倉 YTD',usYTD,'Dec 31 收盤為基準')}
+    ${ytdBlock('VTI',vtiYTD,'Vanguard Total Market')}
+    ${diffLine(usYTD,vtiYTD)}
+  </div>`;
+  el.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">${twSection}${usSection}</div>`;
 }
 
 // ════════════════════════════════════════════════
@@ -1639,6 +1713,8 @@ window.onload=()=>{
   setLastUpdated();
   const savedRPnl=localStorage.getItem('realized_pnl_v1');
   if(savedRPnl) document.getElementById('realizedPnlInput').value=savedRPnl;
+  const savedRPnlUS=localStorage.getItem('realized_pnl_us_v1');
+  if(savedRPnlUS) document.getElementById('realizedPnlUSInput').value=savedRPnlUS;
   fetchAndRenderDaily();
   fetchAndRenderYTD();
   fetchUSDTWDRate().then(r => { if(r) usdTwdRate=r; });
