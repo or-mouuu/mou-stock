@@ -143,12 +143,13 @@
     <div style="display:inline-flex;background:var(--hover-bg);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px;">
       <button id="mkt-tw" class="mkt-btn active" onclick="setMarket('tw')">🇹🇼 台股</button>
       <button id="mkt-us" class="mkt-btn"        onclick="setMarket('us')">🇺🇸 美股</button>
+      <button id="mkt-net" class="mkt-btn" onclick="setMarket('net')">📊 總資產</button>
     </div>
     <span id="mktLabel" style="font-size:12px;color:var(--subtle);"></span>
   </div>
 
   <!-- ── Top 4 Cards ── -->
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
+  <div id="stockCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
 
     <!-- Card 1: Portfolio allocation -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
@@ -202,8 +203,42 @@
   </div>
   <div id="treemapTooltip" style="display:none;position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;z-index:9999;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.12);min-width:160px;line-height:1.8;"></div>
 
+  <!-- ── Net Worth Cards (shown when currentMarket==='net') ── -->
+  <div id="netCards" style="display:none;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
+
+    <!-- NW Card 1: 資產配置 -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">資產配置</div>
+      <div id="nwAllocBar" style="height:28px;border-radius:6px;overflow:hidden;display:flex;gap:2px;flex-shrink:0;background:var(--border);margin-bottom:10px;"></div>
+      <div id="nwAllocLegend" style="display:flex;flex-direction:column;gap:4px;flex:1;overflow-y:auto;min-height:0;"></div>
+      <div id="nwAllocTotal" style="flex-shrink:0;"></div>
+    </div>
+
+    <!-- NW Card 2: 總資產 -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0;">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">總資產</div>
+        <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="showAddCashModal()">+ 記錄現金</button>
+      </div>
+      <div id="nwTotal" style="flex:1;overflow-y:auto;min-height:0;"></div>
+    </div>
+
+    <!-- NW Card 3: 財富目標 -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">財富目標</div>
+      <div id="nwGoal" style="flex:1;overflow-y:auto;min-height:0;"></div>
+    </div>
+
+    <!-- NW Card 4: 現金分析 -->
+    <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">現金分析</div>
+      <div id="nwCash" style="flex:1;overflow-y:auto;min-height:0;"></div>
+    </div>
+
+  </div>
+
   <!-- ── Positions Table ── -->
-  <div class="card">
+  <div id="positionsSection" class="card">
     <div class="tabs" style="padding:0 20px;">
       <div class="tab active" id="tab-all"   onclick="setTab('all')">全部</div>
       <div class="tab"        id="tab-long"  onclick="setTab('long')">長期</div>
@@ -240,6 +275,38 @@
         <div style="font-size:40px;margin-bottom:14px;">📂</div>
         <div style="font-weight:600;margin-bottom:6px;">尚無部位資料</div>
         <div style="font-size:13px;">點選「匯入 CSV」或「新增部位」開始使用</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Cash Records (shown when currentMarket==='net') ── -->
+  <div id="netWorthSection" style="display:none;" class="card">
+    <div style="display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;">
+      <div style="font-size:14px;font-weight:600;">現金記錄</div>
+      <div style="margin-left:auto;">
+        <button class="btn btn-primary btn-sm" onclick="showAddCashModal()">+ 新增記錄</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th style="padding-left:20px;">日期</th>
+            <th>現金餘額</th>
+            <th>台股市值</th>
+            <th>美股市值(TWD)</th>
+            <th>黃金市值</th>
+            <th>總資產</th>
+            <th>備註</th>
+            <th style="text-align:center;">操作</th>
+          </tr>
+        </thead>
+        <tbody id="cashTableBody"></tbody>
+      </table>
+      <div id="cashEmptyState" style="text-align:center;padding:60px 20px;color:var(--subtle);display:none;">
+        <div style="font-size:32px;margin-bottom:8px;">📊</div>
+        <div style="font-size:14px;font-weight:500;margin-bottom:4px;">尚無現金記錄</div>
+        <div style="font-size:12px;">點擊「新增記錄」開始追蹤總資產</div>
       </div>
     </div>
   </div>
@@ -482,7 +549,11 @@ const CODE_MAP = {
 let positions  = [];
 let prices     = {};
 let currentTab    = 'all';
-let currentMarket = 'tw';  // 'tw' | 'us'
+let currentMarket = 'tw';  // 'tw' | 'us' | 'net'
+let cashSnapshots = [];   // [{id, date, cash, twStock, usStock, gold, note}]
+let wealthGoal    = 0;    // TWD target
+let emergencyFund = 600000;
+let editingCashId = null;
 let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
 let _ytdVer   = 0;
 let editingId  = null;
@@ -504,10 +575,16 @@ function loadState() {
     const p  = localStorage.getItem(STORAGE_KEY); if (p)  positions = JSON.parse(p);
     const pr = localStorage.getItem(PRICES_KEY);  if (pr) prices    = JSON.parse(pr);
   } catch(e) { positions = []; prices = {}; }
+  try {
+    const cs=localStorage.getItem('cash_snapshots_v1'); if(cs) cashSnapshots=JSON.parse(cs);
+    wealthGoal   =parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0;
+    emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
+  } catch(e){}
 }
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
   localStorage.setItem(PRICES_KEY,  JSON.stringify(prices));
+  localStorage.setItem('cash_snapshots_v1', JSON.stringify(cashSnapshots));
 }
 function saveTypePref(name, type) {
   const p = JSON.parse(localStorage.getItem(PREFS_KEY)||'{}'); p[name]=type;
@@ -728,8 +805,12 @@ function render() {
 // ════════════════════════════════════════════════
 function getFiltered() {
   const q = (document.getElementById('searchInput')?.value||'').toLowerCase();
-  const totalValue = positions.reduce((s,p)=>s+calc(p).value, 0);
-  return positions
+  const isUSPos = p => p.market==='us'||p.type==='美股';
+  const mktPos = positions.filter(p =>
+    currentMarket==='us' ? isUSPos(p) : currentMarket==='tw' ? !isUSPos(p) : true
+  );
+  const totalValue = mktPos.reduce((s,p)=>s+calc(p).value, 0);
+  return mktPos
     .filter(p => {
       const okTab = currentTab==='all'||(currentTab==='long'&&p.type==='長期')||(currentTab==='short'&&p.type==='短期')||(currentTab==='etf'&&p.type==='ETF')||(currentTab==='gold'&&p.type==='黃金')||(currentTab==='us'&&p.type==='美股');
       const okQ   = !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q);
@@ -794,20 +875,28 @@ function setTab(tab) {
 
 function setMarket(m) {
   currentMarket = m;
-  document.getElementById('mkt-tw').className = 'mkt-btn'+(m==='tw'?' active':'');
-  document.getElementById('mkt-us').className = 'mkt-btn'+(m==='us'?' active':'');
-  document.getElementById('realizedTWGroup').style.display = m==='tw' ? 'flex' : 'none';
-  document.getElementById('realizedUSGroup').style.display = m==='us' ? 'flex' : 'none';
-  // Immediately show loading placeholders so stale content disappears right away
-  const loading = '<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
-  document.getElementById('dailyList').innerHTML = loading;
-  document.getElementById('ytdContent').innerHTML = loading;
-  // Bump version tokens — any in-flight async call with an old token will self-abort
-  _dailyVer++;
-  _ytdVer++;
-  render();
-  fetchAndRenderDaily();
-  fetchAndRenderYTD();
+  ['tw','us','net'].forEach(k=>{
+    const btn=document.getElementById('mkt-'+k);
+    if(btn) btn.className='mkt-btn'+(m===k?' active':'');
+  });
+  document.getElementById('realizedTWGroup').style.display = m==='tw'?'flex':'none';
+  document.getElementById('realizedUSGroup').style.display = m==='us'?'flex':'none';
+  const isNet = m==='net';
+  document.getElementById('stockCards').style.display      = isNet?'none':'grid';
+  document.getElementById('netCards').style.display        = isNet?'grid':'none';
+  document.getElementById('positionsSection').style.display= isNet?'none':'';
+  document.getElementById('netWorthSection').style.display = isNet?'':'none';
+  if(!isNet){
+    const loading='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
+    document.getElementById('dailyList').innerHTML=loading;
+    document.getElementById('ytdContent').innerHTML=loading;
+    _dailyVer++; _ytdVer++;
+    render();
+    fetchAndRenderDaily();
+    fetchAndRenderYTD();
+  } else {
+    renderNetWorthView();
+  }
 }
 
 // ════════════════════════════════════════════════
@@ -1739,6 +1828,219 @@ async function fetchAndRenderYTD(){
 }
 
 // ════════════════════════════════════════════════
+// NET WORTH VIEW
+// ════════════════════════════════════════════════
+function monthsBetween(d1,d2){
+  const a=new Date(d1),b=new Date(d2);
+  return(b.getFullYear()-a.getFullYear())*12+(b.getMonth()-a.getMonth());
+}
+function addMonthsLabel(n){
+  const r=new Date(); r.setMonth(r.getMonth()+n);
+  return r.getFullYear()+'年'+(r.getMonth()+1)+'月';
+}
+
+function renderNetWorthView(){
+  renderNetWorthCards();
+  renderCashTable();
+}
+
+function renderNetWorthCards(){
+  const twValue  =positions.filter(p=>p.market!=='us'&&p.type!=='美股'&&p.type!=='黃金'&&p.market!=='gold').reduce((s,p)=>s+calc(p).value,0);
+  const usValue  =positions.filter(p=>p.market==='us'||p.type==='美股').reduce((s,p)=>s+calc(p).value,0);
+  const goldValue=positions.filter(p=>p.type==='黃金'||p.market==='gold').reduce((s,p)=>s+calc(p).value,0);
+  const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+  const latest=sorted[0], prev=sorted[1];
+  const cashNow=latest?.cash||0;
+  const currentTotal=cashNow+twValue+usValue+goldValue;
+
+  // ── Card 1: 資產配置 ──
+  const segs=[
+    {label:'現金',v:cashNow,   c:'#64748b'},
+    {label:'台股',v:twValue,   c:'#3b82f6'},
+    {label:'美股',v:usValue,   c:'#8b5cf6'},
+    {label:'黃金',v:goldValue, c:'#f59e0b'},
+  ].filter(s=>s.v>0);
+  const tot4pct=segs.reduce((s,x)=>s+x.v,0);
+  document.getElementById('nwAllocBar').innerHTML=tot4pct?segs.map(s=>`<div style="flex:${s.v};background:${s.c};height:100%;"></div>`).join(''):'';
+  document.getElementById('nwAllocLegend').innerHTML=segs.length?segs.map(s=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
+      <div style="width:8px;height:8px;border-radius:2px;background:${s.c};flex-shrink:0;"></div>
+      <div style="flex:1;font-size:12px;font-weight:600;">${s.label}
+        <span style="font-weight:400;color:var(--muted);"> ${(s.v/tot4pct*100).toFixed(1)}%</span>
+      </div>
+      <div style="font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;">$${fmt(s.v)}</div>
+    </div>`).join(''):'<div style="color:var(--subtle);font-size:12px;padding:4px;">尚無資料</div>';
+  document.getElementById('nwAllocTotal').innerHTML=tot4pct?`
+    <div style="height:1px;background:var(--border);margin:8px 0;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:11px;color:var(--muted);">總計</span>
+      <span style="font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;">$${fmt(currentTotal)}</span>
+    </div>`:'';
+
+  // ── Card 2: 總資產 ──
+  const prevTotal=prev?(prev.cash+(prev.twStock||0)+(prev.usStock||0)+(prev.gold||0)):null;
+  const momChange=prevTotal!==null?currentTotal-prevTotal:null;
+  const momPct=prevTotal?momChange/prevTotal*100:null;
+  const jan1Snap=sorted.filter(s=>s.date<'2026-01-01').sort((a,b)=>b.date.localeCompare(a.date))[0];
+  let ytdObj=null;
+  if(jan1Snap){
+    const j=jan1Snap.cash+(jan1Snap.twStock||0)+(jan1Snap.usStock||0)+(jan1Snap.gold||0);
+    ytdObj={change:currentTotal-j,pct:(currentTotal-j)/j*100};
+  }
+  document.getElementById('nwTotal').innerHTML=`
+    <div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">目前總資產</div>
+      <div style="font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;">$${fmt(currentTotal)}</div>
+      <div style="font-size:10px;color:var(--subtle);margin-top:3px;">${latest?'現金記錄：'+latest.date:'尚無現金記錄，請點擊「記錄現金」'}</div>
+    </div>
+    ${momChange!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">較上筆記錄（${prev.date}）</div>
+      <div style="font-size:18px;font-weight:700;color:${momChange>=0?'var(--profit)':'var(--loss)'};font-variant-numeric:tabular-nums;">${momChange>=0?'+':''}$${fmt(momChange)}</div>
+      <div style="font-size:11px;color:${momChange>=0?'var(--profit)':'var(--loss)'};">${momPct>=0?'+':''}${momPct.toFixed(2)}%</div>
+    </div>`:''}
+    ${ytdObj?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">YTD 總資產成長</div>
+      <div style="font-size:18px;font-weight:700;color:${ytdObj.change>=0?'var(--profit)':'var(--loss)'};font-variant-numeric:tabular-nums;">${ytdObj.change>=0?'+':''}$${fmt(ytdObj.change)}</div>
+      <div style="font-size:11px;color:${ytdObj.change>=0?'var(--profit)':'var(--loss)'};">${ytdObj.pct>=0?'+':''}${ytdObj.pct.toFixed(2)}%</div>
+    </div>`:''}`;
+
+  // ── Card 3: 財富目標 ──
+  const goal=wealthGoal;
+  const progress=goal>0?Math.min(currentTotal/goal*100,100):0;
+  let estMonths=null;
+  if(goal>currentTotal&&sorted.length>=2){
+    const recent=sorted.slice(0,Math.min(sorted.length,6));
+    const first=recent[recent.length-1], last=recent[0];
+    const firstT=first.cash+(first.twStock||0)+(first.usStock||0)+(first.gold||0);
+    const lastT =last.cash+(last.twStock||0)+(last.usStock||0)+(last.gold||0);
+    const mo=monthsBetween(first.date,last.date);
+    if(mo>0&&lastT>firstT){const mg=(lastT-firstT)/mo;if(mg>0)estMonths=Math.ceil((goal-currentTotal)/mg);}
+  }
+  document.getElementById('nwGoal').innerHTML=`
+    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">目標總資產（元）</div>
+      <input type="number" id="wealthGoalInput" value="${goal||''}" placeholder="輸入目標金額…"
+        style="width:100%;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+        oninput="wealthGoal=parseFloat(this.value)||0;localStorage.setItem('wealth_goal_v1',String(wealthGoal));renderNetWorthCards()">
+    </div>
+    ${goal>0?`
+    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px;">
+        <span style="color:var(--muted);">$${fmt(currentTotal)} / $${fmt(goal)}</span>
+        <span style="font-weight:700;">${progress.toFixed(1)}%</span>
+      </div>
+      <div style="background:var(--border);border-radius:999px;height:10px;overflow:hidden;">
+        <div style="height:100%;border-radius:999px;background:${progress>=100?'#16a34a':'#3b82f6'};width:${progress.toFixed(1)}%;transition:width .4s;"></div>
+      </div>
+    </div>
+    ${estMonths!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">依近期成長率預估</div>
+      <div style="font-size:20px;font-weight:700;">約 <span style="color:#3b82f6;">${estMonths}</span> 個月</div>
+      <div style="font-size:10px;color:var(--subtle);">預計 ${addMonthsLabel(estMonths)}</div>
+    </div>`:''}
+    `:'<div style="font-size:12px;color:var(--subtle);padding:4px 0;">輸入目標金額後顯示進度與預估達標時間</div>'}`;
+
+  // ── Card 4: 現金分析 ──
+  const efund=emergencyFund;
+  const investable=Math.max(0,cashNow-efund);
+  const investRatio=currentTotal>0?((twValue+usValue+goldValue)/currentTotal*100):0;
+  document.getElementById('nwCash').innerHTML=`
+    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">緊急備用金目標（元）</div>
+      <input type="number" id="efundInput" value="${efund||''}" placeholder="設定金額…"
+        style="width:100%;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+        oninput="emergencyFund=parseFloat(this.value)||0;localStorage.setItem('emergency_fund_v1',String(emergencyFund));renderNetWorthCards()">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;">
+      ${smallStat('現金佔比',fmtD(currentTotal>0?cashNow/currentTotal*100:0)+'%')}
+      ${smallStat('投資佔比',fmtD(investRatio)+'%')}
+      ${smallStat('現金餘額','$'+fmt(cashNow))}
+      ${smallStat('可投資現金','<span style="color:'+(investable>0?'var(--profit)':'var(--muted)')+';">$'+fmt(investable)+'</span>')}
+    </div>
+    ${investable>0
+      ?`<div style="padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:11px;color:#1d4ed8;">💡 超出備用金 <strong>$${fmt(investable)}</strong>，可考慮持續買進</div>`
+      :cashNow<efund&&efund>0
+        ?`<div style="padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#b45309;">⚠️ 現金低於備用金目標，建議先補足現金緩衝</div>`
+        :''}`;
+}
+
+function renderCashTable(){
+  const tbody=document.getElementById('cashTableBody');
+  const empty=document.getElementById('cashEmptyState');
+  if(!tbody) return;
+  const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+  if(!sorted.length){tbody.innerHTML='';empty.style.display='block';return;}
+  empty.style.display='none';
+  tbody.innerHTML=sorted.map(r=>{
+    const total=r.cash+(r.twStock||0)+(r.usStock||0)+(r.gold||0);
+    return `<tr>
+      <td style="padding-left:20px;font-weight:500;">${r.date}</td>
+      <td>$${fmt(r.cash)}</td>
+      <td>${r.twStock!=null?'$'+fmt(r.twStock):'—'}</td>
+      <td>${r.usStock!=null?'$'+fmt(r.usStock):'—'}</td>
+      <td>${r.gold!=null?'$'+fmt(r.gold):'—'}</td>
+      <td style="font-weight:700;">$${fmt(total)}</td>
+      <td style="color:var(--muted);font-size:12px;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
+      <td style="text-align:center;white-space:nowrap;">
+        <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function showAddCashModal(){
+  editingCashId=null;
+  document.getElementById('cashModalTitle').textContent='新增現金記錄';
+  document.getElementById('cashDate').value=new Date().toISOString().split('T')[0];
+  document.getElementById('cashAmount').value='';
+  const twV =Math.round(positions.filter(p=>p.market!=='us'&&p.type!=='美股'&&p.type!=='黃金'&&p.market!=='gold').reduce((s,p)=>s+calc(p).value,0));
+  const usV =Math.round(positions.filter(p=>p.market==='us'||p.type==='美股').reduce((s,p)=>s+calc(p).value,0));
+  const gV  =Math.round(positions.filter(p=>p.type==='黃金'||p.market==='gold').reduce((s,p)=>s+calc(p).value,0));
+  document.getElementById('cashTWStock').value=twV||'';
+  document.getElementById('cashUSStock').value=usV||'';
+  document.getElementById('cashGold').value   =gV||'';
+  document.getElementById('cashNote').value='';
+  document.getElementById('cashModal').style.display='flex';
+}
+function editCashRecord(id){
+  const r=cashSnapshots.find(s=>s.id===id); if(!r) return;
+  editingCashId=id;
+  document.getElementById('cashModalTitle').textContent='編輯現金記錄';
+  document.getElementById('cashDate').value   =r.date;
+  document.getElementById('cashAmount').value =r.cash;
+  document.getElementById('cashTWStock').value=r.twStock!=null?r.twStock:'';
+  document.getElementById('cashUSStock').value=r.usStock!=null?r.usStock:'';
+  document.getElementById('cashGold').value   =r.gold!=null?r.gold:'';
+  document.getElementById('cashNote').value   =r.note||'';
+  document.getElementById('cashModal').style.display='flex';
+}
+function hideCashModal(){document.getElementById('cashModal').style.display='none';editingCashId=null;}
+function saveCashRecord(){
+  const date =document.getElementById('cashDate').value;
+  const cash =parseFloat(document.getElementById('cashAmount').value)||0;
+  const twS  =document.getElementById('cashTWStock').value!==''?parseFloat(document.getElementById('cashTWStock').value):null;
+  const usS  =document.getElementById('cashUSStock').value!==''?parseFloat(document.getElementById('cashUSStock').value):null;
+  const goldS=document.getElementById('cashGold').value!==''?parseFloat(document.getElementById('cashGold').value):null;
+  const note =document.getElementById('cashNote').value.trim();
+  if(!date){toast('請填寫日期','warn');return;}
+  if(editingCashId){
+    const idx=cashSnapshots.findIndex(s=>s.id===editingCashId);
+    if(idx>=0) cashSnapshots[idx]={...cashSnapshots[idx],date,cash,twStock:twS,usStock:usS,gold:goldS,note};
+  } else {
+    cashSnapshots.push({id:uid(),date,cash,twStock:twS,usStock:usS,gold:goldS,note});
+  }
+  const wasEditing=!!editingCashId;
+  saveState(); hideCashModal(); renderNetWorthView();
+  toast(wasEditing?'記錄已更新':'成功新增現金記錄');
+}
+function deleteCashRecord(id){
+  if(!confirm('確定刪除此記錄？')) return;
+  cashSnapshots=cashSnapshots.filter(s=>s.id!==id);
+  saveState(); renderNetWorthView();
+}
+
+// ════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════
 window.onload=()=>{
@@ -1754,5 +2056,53 @@ window.onload=()=>{
   fetchUSDTWDRate().then(r => { if(r) usdTwdRate=r; });
 };
 </script>
+
+<!-- ═══ CASH RECORD MODAL ═══ -->
+<div id="cashModal" style="display:none;" class="modal-bg" onclick="if(event.target===this)hideCashModal()">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header">
+      <div class="modal-title" id="cashModalTitle">新增現金記錄</div>
+      <button class="modal-close" onclick="hideCashModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <div>
+          <label class="field-label">日期</label>
+          <input type="date" id="cashDate" style="width:100%;">
+        </div>
+        <div>
+          <label class="field-label">現金總額（所有帳戶合計）</label>
+          <input type="number" id="cashAmount" placeholder="0" style="width:100%;">
+        </div>
+        <div>
+          <label class="field-label">股票 &amp; 黃金市值（自動帶入，可修改）</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">台股市值</div>
+              <input type="number" id="cashTWStock" placeholder="0" style="width:100%;">
+            </div>
+            <div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">美股市值(TWD)</div>
+              <input type="number" id="cashUSStock" placeholder="0" style="width:100%;">
+            </div>
+            <div>
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">黃金市值</div>
+              <input type="number" id="cashGold" placeholder="0" style="width:100%;">
+            </div>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">備註（可記錄各帳戶明細）</label>
+          <textarea id="cashNote" placeholder="國泰 118,285 / 國泰外幣 116,868 / 台新 419,165 / ..."
+            style="width:100%;height:72px;resize:vertical;font-family:inherit;font-size:13px;"></textarea>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:20px;justify-content:flex-end;">
+        <button class="btn btn-outline" onclick="hideCashModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveCashRecord()">儲存</button>
+      </div>
+    </div>
+  </div>
+</div>
 </body>
 </html>
