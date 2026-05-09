@@ -483,6 +483,8 @@ let positions  = [];
 let prices     = {};
 let currentTab    = 'all';
 let currentMarket = 'tw';  // 'tw' | 'us'
+let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
+let _ytdVer   = 0;
 let editingId  = null;
 let splitId    = null;
 let splitSubRows = [];
@@ -794,9 +796,15 @@ function setMarket(m) {
   currentMarket = m;
   document.getElementById('mkt-tw').className = 'mkt-btn'+(m==='tw'?' active':'');
   document.getElementById('mkt-us').className = 'mkt-btn'+(m==='us'?' active':'');
-  // Show the right realized-PnL input
   document.getElementById('realizedTWGroup').style.display = m==='tw' ? 'flex' : 'none';
   document.getElementById('realizedUSGroup').style.display = m==='us' ? 'flex' : 'none';
+  // Immediately show loading placeholders so stale content disappears right away
+  const loading = '<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
+  document.getElementById('dailyList').innerHTML = loading;
+  document.getElementById('ytdContent').innerHTML = loading;
+  // Bump version tokens — any in-flight async call with an old token will self-abort
+  _dailyVer++;
+  _ytdVer++;
   render();
   fetchAndRenderDaily();
   fetchAndRenderYTD();
@@ -1557,8 +1565,10 @@ async function fetchStockDayChange(code,market){
 }
 
 async function fetchAndRenderDaily(){
+  const ver=_dailyVer;  // capture; if it changes mid-flight we're stale
   const mktPos=positions.filter(p=>currentMarket==='us'?(p.market==='us'||p.type==='美股'):(p.market!=='us'&&p.type!=='美股'));
   if(!mktPos.length){
+    if(ver!==_dailyVer) return;
     document.getElementById('dailyList').innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">尚無部位</div>';
     return;
   }
@@ -1582,7 +1592,7 @@ async function fetchAndRenderDaily(){
       fetchStockDayChange(code,market).then(r=>r?{code,name,market,...r}:null)
     )).then(r=>r.filter(Boolean));
   }
-  // Update all prices (not just filtered) so table stays correct
+  if(ver!==_dailyVer) return;  // market was switched again while we were fetching
   stockResults.forEach(r=>{
     dailyChanges[r.code]={change:r.change,price:r.price};
     if(r.price>0) prices[r.code]={price:r.price,updatedAt:new Date().toISOString()};
@@ -1649,6 +1659,7 @@ async function fetchDec31Price(code, market) {
 }
 
 async function fetchAndRenderYTD(){
+  const ver=_ytdVer;  // capture version; abort if market switches mid-flight
   const el=document.getElementById('ytdContent');
   const rate=usdTwdRate||32;
 
@@ -1697,6 +1708,7 @@ async function fetchAndRenderYTD(){
       if(ytdBase>0) twYTD=(ytdCur-ytdBase+realizedTW)/ytdBase*100;
     }
     const diff=twYTD!==null&&taiexYTD!==null?twYTD-taiexYTD:null;
+    if(ver!==_ytdVer) return;
     el.innerHTML=ytdBlock('持倉 YTD',twYTD,'2025/12/31 收盤為基準')+ytdBlock('台股加權指數',taiexYTD,'TWSE')+diffLine(diff);
 
   } else {
@@ -1721,6 +1733,7 @@ async function fetchAndRenderYTD(){
       if(ytdBase>0) usYTD=(ytdCur-ytdBase+realizedUS)/ytdBase*100;
     }
     const diff=usYTD!==null&&vtiYTD!==null?usYTD-vtiYTD:null;
+    if(ver!==_ytdVer) return;
     el.innerHTML=ytdBlock('持倉 YTD',usYTD,'2025/12/31 USD 收盤為基準')+ytdBlock('VTI',vtiYTD,'Vanguard Total Market ETF')+diffLine(diff);
   }
 }
