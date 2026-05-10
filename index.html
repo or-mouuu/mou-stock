@@ -141,15 +141,15 @@
   <!-- ── Market switcher ── -->
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
     <div style="display:inline-flex;background:var(--hover-bg);border:1px solid var(--border);border-radius:8px;padding:3px;gap:2px;">
-      <button id="mkt-tw" class="mkt-btn active" onclick="setMarket('tw')">🇹🇼 台股</button>
-      <button id="mkt-us" class="mkt-btn"        onclick="setMarket('us')">🇺🇸 美股</button>
-      <button id="mkt-net" class="mkt-btn" onclick="setMarket('net')">📊 總資產</button>
+      <button id="mkt-net" class="mkt-btn active" onclick="setMarket('net')">📊 總資產</button>
+      <button id="mkt-tw" class="mkt-btn"         onclick="setMarket('tw')">🇹🇼 台股</button>
+      <button id="mkt-us" class="mkt-btn"         onclick="setMarket('us')">🇺🇸 美股</button>
     </div>
     <span id="mktLabel" style="font-size:12px;color:var(--subtle);"></span>
   </div>
 
   <!-- ── Top 4 Cards ── -->
-  <div id="stockCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
+  <div id="stockCards" style="display:none;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
 
     <!-- Card 1: Portfolio allocation -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
@@ -204,7 +204,7 @@
   <div id="treemapTooltip" style="display:none;position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:12px;z-index:9999;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.12);min-width:160px;line-height:1.8;"></div>
 
   <!-- ── Net Worth Cards (shown when currentMarket==='net') ── -->
-  <div id="netCards" style="display:none;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
+  <div id="netCards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px;">
 
     <!-- NW Card 1: 資產配置 -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
@@ -280,7 +280,7 @@
   </div>
 
   <!-- ── Cash Records (shown when currentMarket==='net') ── -->
-  <div id="netWorthSection" style="display:none;" class="card">
+  <div id="netWorthSection" class="card">
     <div style="display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;">
       <div style="font-size:14px;font-weight:600;">現金記錄</div>
       <div style="margin-left:auto;">
@@ -392,12 +392,11 @@
             <option value="短期">短期</option>
             <option value="ETF">ETF</option>
             <option value="黃金">黃金</option>
-            <option value="美股">美股</option>
           </select>
         </div>
         <div id="fMarketRow">
           <label class="field-label">市場</label>
-          <select id="fMarket" style="width:100%;">
+          <select id="fMarket" style="width:100%;" onchange="onMarketChange()">
             <option value="tse">上市 (TSE)</option>
             <option value="otc">上櫃 (OTC)</option>
             <option value="us">美股 (US)</option>
@@ -549,7 +548,10 @@ const CODE_MAP = {
 let positions  = [];
 let prices     = {};
 let currentTab    = 'all';
-let currentMarket = 'tw';  // 'tw' | 'us' | 'net'
+let currentMarket = 'net';  // 'tw' | 'us' | 'net'
+function isUSPos(p)   { return p.market==='us'||p.currency==='USD'; }
+function isGoldPos(p) { return p.market==='gold'||p.type==='黃金'; }
+function isTWPos(p)   { return !isUSPos(p)&&!isGoldPos(p); }
 let cashSnapshots = [];   // [{id, date, cash, twStock, usStock, gold, note}]
 let wealthGoal    = 0;    // TWD target
 let emergencyFund = 600000;
@@ -580,6 +582,7 @@ function loadState() {
     wealthGoal   =parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0;
     emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
   } catch(e){}
+  positions.forEach(p=>{ if(p.type==='美股') p.type='長期'; });
 }
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
@@ -676,7 +679,7 @@ function parseUSBrokerageCSV(text) {
     } else {
       map[ticker] = { stockCode:ticker, stockName:name, shares, avgCost,
                       csvPrice:isNaN(csvPrice)?null:csvPrice,
-                      market:'us', currency:'USD', type:'美股', transactions:[] };
+                      market:'us', currency:'USD', type:'長期', transactions:[] };
     }
   }
   return Object.values(map);
@@ -805,15 +808,19 @@ function render() {
 // ════════════════════════════════════════════════
 function getFiltered() {
   const q = (document.getElementById('searchInput')?.value||'').toLowerCase();
-  const isUSPos = p => p.market==='us'||p.type==='美股';
   const mktPos = positions.filter(p =>
     currentMarket==='us' ? isUSPos(p) : currentMarket==='tw' ? !isUSPos(p) : true
   );
   const totalValue = mktPos.reduce((s,p)=>s+calc(p).value, 0);
   return mktPos
     .filter(p => {
-      const okTab = currentTab==='all'||(currentTab==='long'&&p.type==='長期')||(currentTab==='short'&&p.type==='短期')||(currentTab==='etf'&&p.type==='ETF')||(currentTab==='gold'&&p.type==='黃金')||(currentTab==='us'&&p.type==='美股');
-      const okQ   = !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q);
+      const okTab = currentTab==='all'
+        ||(currentTab==='long'&&p.type==='長期')
+        ||(currentTab==='short'&&p.type==='短期')
+        ||(currentTab==='etf'&&p.type==='ETF')
+        ||(currentTab==='gold'&&isGoldPos(p))
+        ||(currentTab==='us'&&isUSPos(p));
+      const okQ = !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q);
       return okTab && okQ;
     })
     .map(p => ({ ...p, _pct: totalValue > 0 ? calc(p).value / totalValue * 100 : 0 }))
@@ -831,7 +838,7 @@ function renderTable() {
     const {price,cost,value,pnl,ret} = calc(p);
     const cls  = pnlCls(pnl);
     const sign = pnlSign(pnl);
-    const badgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':p.type==='黃金'?'gold':p.type==='美股'?'us':'short';
+    const badgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':isGoldPos(p)?'gold':isUSPos(p)?'us':'short';
     const badge=`<span class="badge badge-${badgeCls}">${p.type}</span>`;
     const daily = dailyChanges[p.stockCode];
     const fbd = firstBuyDate(p);
@@ -884,8 +891,8 @@ function setMarket(m) {
   const isNet = m==='net';
   document.getElementById('stockCards').style.display      = isNet?'none':'grid';
   document.getElementById('netCards').style.display        = isNet?'grid':'none';
-  document.getElementById('positionsSection').style.display= isNet?'none':'';
   document.getElementById('netWorthSection').style.display = isNet?'':'none';
+  // positionsSection always visible; getFiltered handles filtering
   if(!isNet){
     const loading='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
     document.getElementById('dailyList').innerHTML=loading;
@@ -895,6 +902,7 @@ function setMarket(m) {
     fetchAndRenderDaily();
     fetchAndRenderYTD();
   } else {
+    render();
     renderNetWorthView();
   }
 }
@@ -903,37 +911,42 @@ function setMarket(m) {
 // RENDER — CHART
 // ════════════════════════════════════════════════
 function renderCharts() {
-  const isUS = currentMarket === 'us';
-  const pos = positions.filter(p => isUS ? (p.market==='us'||p.type==='美股') : (p.market!=='us'&&p.type!=='美股'));
+  if(currentMarket==='net') return;
+  const isUS=currentMarket==='us';
+  const pos=positions.filter(p=>isUS?isUSPos(p):isTWPos(p));
 
-  let ev=0,ec=0,lv=0,lc=0,sv=0,sc=0,gv=0,gc=0,uv=0,uc=0;
-  pos.forEach(p => {
+  let ev=0,ec=0,lv=0,lc=0,sv=0,sc=0,gv=0,gc=0;
+  pos.forEach(p=>{
     const {value,cost}=calc(p);
-    if (isUS)                     { uv+=value; uc+=cost; }
-    else if (p.type==='ETF')      { ev+=value; ec+=cost; }
-    else if (p.type==='長期')     { lv+=value; lc+=cost; }
-    else if (p.type==='黃金')     { gv+=value; gc+=cost; }
-    else                           { sv+=value; sc+=cost; }
+    if(p.type==='ETF')      {ev+=value;ec+=cost;}
+    else if(p.type==='長期') {lv+=value;lc+=cost;}
+    else if(isGoldPos(p))   {gv+=value;gc+=cost;}
+    else                     {sv+=value;sc+=cost;}
   });
 
-  const types = isUS
-    ? [{label:'美股', v:uv, cost:uc, c:'#8b5cf6'}]
-    : [
+  const types=isUS
+    ?[
+        {label:'ETF',  v:ev, cost:ec, c:'#0ea5e9'},
+        {label:'長期', v:lv, cost:lc, c:'#8b5cf6'},
+        {label:'短期', v:sv, cost:sc, c:'#a855f7'},
+      ].filter(x=>x.v>0)
+    :[
         {label:'ETF',  v:ev, cost:ec, c:'#0ea5e9'},
         {label:'長期', v:lv, cost:lc, c:'#3b82f6'},
         {label:'黃金', v:gv, cost:gc, c:'#f59e0b'},
         {label:'短期', v:sv, cost:sc, c:'#ef4444'},
-      ];
-  const activeTypes = types.filter(x=>x.v>0);
-  const total = activeTypes.reduce((s,x)=>s+x.v, 0);
-  const totalCost = activeTypes.reduce((s,x)=>s+x.cost, 0);
+      ].filter(x=>x.v>0);
 
-  const barEl = document.getElementById('allocBar');
-  barEl.innerHTML = total ? activeTypes.map(s=>`<div style="flex:${s.v};background:${s.c};height:100%;"></div>`).join('') : '';
+  const activeTypes=types;
+  const total=activeTypes.reduce((s,x)=>s+x.v,0);
+  const totalCost=activeTypes.reduce((s,x)=>s+x.cost,0);
 
-  document.getElementById('allocLegend').innerHTML = activeTypes.map(x => {
-    const pct = total>0?(x.v/total*100).toFixed(1):'0.0';
-    const pnl = x.v-x.cost;
+  const barEl=document.getElementById('allocBar');
+  barEl.innerHTML=total?activeTypes.map(s=>`<div style="flex:${s.v};background:${s.c};height:100%;"></div>`).join(''):'';
+
+  document.getElementById('allocLegend').innerHTML=activeTypes.map(x=>{
+    const pct=total>0?(x.v/total*100).toFixed(1):'0.0';
+    const pnl=x.v-x.cost;
     return `<div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--hover-bg);border-radius:6px;">
       <div style="width:8px;height:8px;border-radius:2px;background:${x.c};flex-shrink:0;"></div>
       <div style="flex:1;min-width:0;font-size:11px;font-weight:600;">${x.label}
@@ -942,7 +955,7 @@ function renderCharts() {
       </div></div>`;
   }).join('');
 
-  const pnl=total-totalCost, ret=totalCost>0?(pnl/totalCost)*100:0, sign=pnlSign(pnl);
+  const pnl=total-totalCost,ret=totalCost>0?(pnl/totalCost)*100:0,sign=pnlSign(pnl);
   document.getElementById('allocStats').innerHTML=`
     <div style="height:1px;background:var(--border);margin:8px 0;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
@@ -1028,7 +1041,9 @@ function renderImportTable() {
         <td>$${fmtD(r.avgCost)}</td>
         <td>${r.csvPrice!=null?'$'+fmtD(r.csvPrice):'—'}</td>
         <td><select id="imp-type-${i}" style="width:68px;">
-          <option value="美股" selected>美股</option>
+          <option value="長期" selected>長期</option>
+          <option value="短期">短期</option>
+          <option value="ETF">ETF</option>
         </select></td>
         <td><button class="btn btn-danger btn-sm" onclick="importRows.splice(${i},1);renderImportTable()">移除</button></td>
       </tr>`;
@@ -1110,30 +1125,32 @@ function autoFillName() {
 }
 function onTypeChange(){
   const type=document.getElementById('fType').value;
+  if(type==='黃金'){
+    document.getElementById('fMarket').value='gold';
+    onMarketChange();
+  }
+}
+function onMarketChange(){
+  const mkt=document.getElementById('fMarket').value;
   const marketRow=document.getElementById('fMarketRow');
   const costLabel=document.getElementById('fCostLabel');
   const costHint=document.getElementById('fCostHint');
   const currency=document.getElementById('fCurrency');
   const codeInput=document.getElementById('fCode');
-  if(type==='美股'){
-    marketRow.style.display='none';
-    document.getElementById('fMarket').value='us';
+  if(mkt==='us'){
     currency.value='USD';
     costLabel.textContent='成本均價（USD/股）*';
     costHint.textContent=`目前匯率：${usdTwdRate?fmtD(usdTwdRate)+' TWD/USD':'載入中…'}`;
     costHint.style.display='block';
     codeInput.placeholder='NVDA';
-  } else if(type==='黃金'){
-    marketRow.style.display='none';
-    document.getElementById('fMarket').value='gold';
+  } else if(mkt==='gold'){
+    document.getElementById('fType').value='黃金';
     currency.value='TWD';
     costLabel.textContent='成本均價（NTD/克）*';
-    costHint.textContent='';
     costHint.style.display='none';
     if(!codeInput.value) codeInput.value='GOLD';
     codeInput.placeholder='GOLD';
   } else {
-    marketRow.style.display='';
     currency.value='TWD';
     costLabel.textContent='成本均價（每股）*';
     costHint.style.display='none';
@@ -1268,20 +1285,12 @@ function showDetailModal(id) {
   const {price,cost,value,pnl,ret}=calc(p);
   const cls=pnlCls(pnl); const sign=pnlSign(pnl);
   const code=p.stockCode||'';
-  const detailBadgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':p.type==='黃金'?'gold':p.type==='美股'?'us':'short';
+  const detailBadgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':isGoldPos(p)?'gold':isUSPos(p)?'us':'short';
   const badge=`<span class="badge badge-${detailBadgeCls}">${p.type}</span>`;
 
   document.getElementById('detailTitle').innerHTML=
     `${p.stockName} <span style="font-size:13px;color:var(--muted);font-weight:400;">${code||'無代號'}</span> ${badge}`;
 
-  const links = code ? `
-    <a href="https://goodinfo.tw/tw/StockDetail.asp?STOCK_ID=${code}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">Goodinfo</a>
-    <a href="https://goodinfo.tw/tw/StockBrokerTradeDetail.asp?STOCK_ID=${code}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">分點進出</a>
-    <a href="https://www.twse.com.tw/fund/T86?response=html&date=${todayStr()}&selectType=ALLBUT0999" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">法人買賣超</a>
-    <a href="https://www.tdcc.com.tw/portal/zh/smWeb/qryStock" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">集保戶數</a>
-    <a href="https://statementdog.com/analysis/${code}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">財報狗</a>
-    <a href="https://tw.tradingview.com/chart/?symbol=TWSE:${code}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;">K線圖</a>
-  ` : `<span style="font-size:13px;color:var(--subtle);">請設定股票代號以啟用外部連結</span>`;
 
   // Build transactions section
   const txRows = (p.transactions||[])
@@ -1328,9 +1337,6 @@ function showDetailModal(id) {
     </div>
     <!-- Notes -->
     ${p.notes?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:6px;font-size:13px;color:var(--muted);margin-bottom:16px;">${p.notes}</div>`:''}
-    <!-- Links -->
-    <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">外部連結</div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px;">${links}</div>
     <div class="divider"></div>
     <!-- Transactions -->
     <div style="display:flex;align-items:center;margin-bottom:10px;">
@@ -1442,7 +1448,7 @@ function renderTreemap() {
   const container=document.getElementById('treemapContainer');
   if (!container) return;
   const W=container.clientWidth, H=container.clientHeight;
-  const mktPos=positions.filter(p=>currentMarket==='us'?(p.market==='us'||p.type==='美股'):(p.market!=='us'&&p.type!=='美股'));
+  const mktPos=positions.filter(p=>currentMarket==='us'?isUSPos(p):currentMarket==='tw'?isTWPos(p):true);
   if (!W||!H||!mktPos.length) {
     container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--subtle);font-size:13px;">尚無部位</div>';
     return;
@@ -1535,7 +1541,7 @@ async function fetchUSDTWDRate(){
   const key=`usdtwd_${todayStr()}`;
   const c=sessionStorage.getItem(key); if(c) return parseFloat(c);
   // Yahoo Finance TWD=X
-  const d=await fetchWithProxy('https://query1.finance.yahoo.com/v8/finance/chart/TWD=X?range=1d&interval=1d');
+  const d=await fetchJSON('https://query2.finance.yahoo.com/v8/finance/chart/TWD=X?range=1d&interval=1d') || await fetchJSON('https://query1.finance.yahoo.com/v8/finance/chart/TWD=X?range=1d&interval=1d');
   const rate=d?.chart?.result?.[0]?.meta?.regularMarketPrice;
   if(rate&&rate>20&&rate<50){ sessionStorage.setItem(key,String(rate)); return rate; }
   // Fallback: 台銀 CSV
@@ -1546,38 +1552,40 @@ async function fetchUSDTWDRate(){
   return null;
 }
 
+async function fetchJSON(url, timeout=6000){
+  const ctrl=new AbortController();
+  const tid=setTimeout(()=>ctrl.abort(),timeout);
+  try{
+    const res=await fetch(url,{cache:'no-store',signal:ctrl.signal});
+    clearTimeout(tid);
+    if(!res.ok) return null;
+    return await res.json();
+  }catch(e){clearTimeout(tid);return null;}
+}
+
 async function fetchYahooPrice(ticker){
   const key=`yahoo_${ticker}_${todayStr()}`;
   const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
-  const baseUrls=[
-    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
+  const bases=[
     `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
-    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
     `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
   ];
-  for(const base of baseUrls){
-    const candidates=[
-      base,
-      `https://corsproxy.io/?${encodeURIComponent(base)}`,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`,
-    ];
-    for(const u of candidates){
-      try{
-        const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
-        const d=await res.json();
-        // v7 quote format
-        const q=d?.quoteResponse?.result?.[0];
-        if(q?.regularMarketPrice){
-          const r={price:q.regularMarketPrice, change:q.regularMarketChangePercent??null};
-          sessionStorage.setItem(key,JSON.stringify(r)); return r;
-        }
-        // v8 chart format
-        const meta=d?.chart?.result?.[0]?.meta;
-        if(meta?.regularMarketPrice){
-          const r={price:meta.regularMarketPrice, change:meta.chartPreviousClose>0?(meta.regularMarketPrice-meta.chartPreviousClose)/meta.chartPreviousClose*100:null};
-          sessionStorage.setItem(key,JSON.stringify(r)); return r;
-        }
-      }catch(e){}
+  for(const base of bases){
+    for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`]){
+      const d=await fetchJSON(u);
+      if(!d) continue;
+      const q=d?.quoteResponse?.result?.[0];
+      if(q?.regularMarketPrice){
+        const r={price:q.regularMarketPrice,change:q.regularMarketChangePercent??null};
+        sessionStorage.setItem(key,JSON.stringify(r)); return r;
+      }
+      const meta=d?.chart?.result?.[0]?.meta;
+      if(meta?.regularMarketPrice){
+        const r={price:meta.regularMarketPrice,change:meta.chartPreviousClose>0?(meta.regularMarketPrice-meta.chartPreviousClose)/meta.chartPreviousClose*100:null};
+        sessionStorage.setItem(key,JSON.stringify(r)); return r;
+      }
     }
   }
   return null;
@@ -1655,7 +1663,7 @@ async function fetchStockDayChange(code,market){
 
 async function fetchAndRenderDaily(){
   const ver=_dailyVer;  // capture; if it changes mid-flight we're stale
-  const mktPos=positions.filter(p=>currentMarket==='us'?(p.market==='us'||p.type==='美股'):(p.market!=='us'&&p.type!=='美股'));
+  const mktPos=positions.filter(p=>currentMarket==='us'?isUSPos(p):isTWPos(p));
   if(!mktPos.length){
     if(ver!==_dailyVer) return;
     document.getElementById('dailyList').innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">尚無部位</div>';
@@ -1780,7 +1788,7 @@ async function fetchAndRenderYTD(){
     if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
     const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:null;
     const realizedTW=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
-    const twPos=positions.filter(p=>p.market!=='us'&&p.type!=='美股');
+    const twPos=positions.filter(p=>isTWPos(p));
     let twYTD=null;
     if(twPos.length){
       const dp31=await Promise.all(twPos.map(p=>fetchDec31Price(p.stockCode,p.market)));
@@ -1805,7 +1813,7 @@ async function fetchAndRenderYTD(){
     const vtiNow=vtiNowData?.price;
     const vtiYTD=(vtiNow&&vtiBase>0)?(vtiNow-vtiBase)/vtiBase*100:null;
     const realizedUS=parseFloat(localStorage.getItem('realized_pnl_us_v1')||'0')||0;
-    const usPos=positions.filter(p=>p.market==='us'||p.type==='美股');
+    const usPos=positions.filter(p=>isUSPos(p));
     let usYTD=null;
     if(usPos.length){
       const dp31us=await Promise.all(usPos.map(p=>fetchDec31PriceUS(p.stockCode)));
@@ -1845,9 +1853,9 @@ function renderNetWorthView(){
 }
 
 function renderNetWorthCards(){
-  const twValue  =positions.filter(p=>p.market!=='us'&&p.type!=='美股'&&p.type!=='黃金'&&p.market!=='gold').reduce((s,p)=>s+calc(p).value,0);
-  const usValue  =positions.filter(p=>p.market==='us'||p.type==='美股').reduce((s,p)=>s+calc(p).value,0);
-  const goldValue=positions.filter(p=>p.type==='黃金'||p.market==='gold').reduce((s,p)=>s+calc(p).value,0);
+  const twValue  =positions.filter(p=>isTWPos(p)).reduce((s,p)=>s+calc(p).value,0);
+  const usValue  =positions.filter(p=>isUSPos(p)).reduce((s,p)=>s+calc(p).value,0);
+  const goldValue=positions.filter(p=>isGoldPos(p)).reduce((s,p)=>s+calc(p).value,0);
   const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
   const latest=sorted[0], prev=sorted[1];
   const cashNow=latest?.cash||0;
@@ -1994,9 +2002,9 @@ function showAddCashModal(){
   document.getElementById('cashModalTitle').textContent='新增現金記錄';
   document.getElementById('cashDate').value=new Date().toISOString().split('T')[0];
   document.getElementById('cashAmount').value='';
-  const twV =Math.round(positions.filter(p=>p.market!=='us'&&p.type!=='美股'&&p.type!=='黃金'&&p.market!=='gold').reduce((s,p)=>s+calc(p).value,0));
-  const usV =Math.round(positions.filter(p=>p.market==='us'||p.type==='美股').reduce((s,p)=>s+calc(p).value,0));
-  const gV  =Math.round(positions.filter(p=>p.type==='黃金'||p.market==='gold').reduce((s,p)=>s+calc(p).value,0));
+  const twV =Math.round(positions.filter(p=>isTWPos(p)).reduce((s,p)=>s+calc(p).value,0));
+  const usV =Math.round(positions.filter(p=>isUSPos(p)).reduce((s,p)=>s+calc(p).value,0));
+  const gV  =Math.round(positions.filter(p=>isGoldPos(p)).reduce((s,p)=>s+calc(p).value,0));
   document.getElementById('cashTWStock').value=twV||'';
   document.getElementById('cashUSStock').value=usV||'';
   document.getElementById('cashGold').value   =gV||'';
@@ -2045,15 +2053,14 @@ function deleteCashRecord(id){
 // ════════════════════════════════════════════════
 window.onload=()=>{
   loadState();
-  render();
-  setLastUpdated();
   const savedRPnl=localStorage.getItem('realized_pnl_v1');
   if(savedRPnl) document.getElementById('realizedPnlInput').value=savedRPnl;
   const savedRPnlUS=localStorage.getItem('realized_pnl_us_v1');
   if(savedRPnlUS) document.getElementById('realizedPnlUSInput').value=savedRPnlUS;
-  fetchAndRenderDaily();
-  fetchAndRenderYTD();
-  fetchUSDTWDRate().then(r => { if(r) usdTwdRate=r; });
+  fetchUSDTWDRate().then(r=>{ if(r) usdTwdRate=r; render(); });
+  render();
+  setLastUpdated();
+  renderNetWorthView();
 };
 </script>
 
