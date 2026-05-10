@@ -2365,13 +2365,14 @@ function renderNetWorthCards(){
     const amt=goal.amount||0;
     const progress=amt>0?Math.min(currentTotal/amt*100,100):0;
     let estMonths=null;
-    if(amt>currentTotal&&sorted.length>=2){
-      const recent=sorted.slice(0,Math.min(sorted.length,6));
-      const first=recent[recent.length-1],last2=recent[0];
-      const firstT=snapTotal(first);
-      const lastT=snapTotal(last2);
-      const mo=monthsBetween(first.date,last2.date);
-      if(mo>0&&lastT>firstT){const mg=(lastT-firstT)/mo;if(mg>0)estMonths=Math.ceil((amt-currentTotal)/mg);}
+    if(amt>currentTotal&&currentTotal>0&&cwCategories&&cwCategories.length){
+      // 用複利試算的加權年化報酬率反推達標月數
+      const weightedAnnual=cwCategories.reduce((s,c)=>s+(c.pct/100)*(c.rate/100),0);
+      if(weightedAnnual>0){
+        const monthlyRate=weightedAnnual/12;
+        const raw=Math.log(amt/currentTotal)/Math.log(1+monthlyRate);
+        if(isFinite(raw)&&raw>0) estMonths=Math.ceil(raw);
+      }
     }
     goalsHtml+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
