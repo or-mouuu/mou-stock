@@ -783,6 +783,7 @@ function fmtD(n,d=2)  { return isNaN(n)?'—':Number(n).toLocaleString('zh-TW',{
 function pnlCls(n)    { return n>0?'pos':n<0?'neg':'neu'; }
 function pnlSign(n)   { return n>0?'+':''; }
 function uid()        { return crypto?.randomUUID?.()||'id-'+Math.random().toString(36).slice(2)+Date.now(); }
+function escHtml(s)   { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function todayStr()   { const d=new Date(); return `${d.getFullYear()}${(d.getMonth()+1).toString().padStart(2,'0')}${d.getDate().toString().padStart(2,'0')}`; }
 function todayISO()   { return new Date().toISOString().slice(0,10); }
 
