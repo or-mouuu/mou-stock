@@ -2079,20 +2079,37 @@ function renderCashAccountInputs(snapshot){
   el.innerHTML=`
     <div>
       <label class="field-label">各帳戶餘額</label>
-      <div style="display:flex;flex-direction:column;gap:8px;">
+      <div style="display:flex;flex-direction:column;gap:10px;">
         ${bankAccounts.map(a=>`
-          <div style="display:flex;align-items:center;gap:10px;">
-            <div style="font-size:13px;color:var(--text);width:110px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(a.name)}</div>
-            <input type="number" id="cashAcct_${a.id}" placeholder="0"
-              value="${snapshot?.accounts?.[a.id]!=null?snapshot.accounts[a.id]:''}"
-              oninput="updateCashAcctTotal()"
-              style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text);background:var(--bg);">
+          <div>
+            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:500;">${escHtml(a.name)}</div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <input type="number" id="cashAcct_${a.id}" placeholder="0"
+                value="${snapshot?.accounts?.[a.id]!=null?snapshot.accounts[a.id]:''}"
+                oninput="updateCashAcctTotal()"
+                style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text);background:var(--bg);">
+              <button type="button" onclick="adjustAcct('${a.id}',-1)"
+                style="width:30px;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--hover-bg);color:var(--text);font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;">−</button>
+              <input type="number" id="cashStep_${a.id}" placeholder="調整" min="0"
+                style="width:80px;padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text);background:var(--bg);text-align:center;">
+              <button type="button" onclick="adjustAcct('${a.id}',1)"
+                style="width:30px;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--hover-bg);color:var(--text);font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
           </div>`).join('')}
       </div>
-      <div style="display:flex;justify-content:flex-end;font-size:12px;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+      <div style="display:flex;justify-content:flex-end;font-size:12px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border);">
         合計：<span id="cashAcctTotal" style="font-weight:700;color:var(--text);margin-left:4px;">$0</span>
       </div>
     </div>`;
+  updateCashAcctTotal();
+}
+function adjustAcct(id, sign){
+  const balInput  = document.getElementById('cashAcct_'+id);
+  const stepInput = document.getElementById('cashStep_'+id);
+  const step = parseFloat(stepInput?.value)||0;
+  if(!step){ stepInput?.focus(); return; }
+  const current = parseFloat(balInput.value)||0;
+  balInput.value = Math.max(0, current + sign*step);
   updateCashAcctTotal();
 }
 function updateCashAcctTotal(){
