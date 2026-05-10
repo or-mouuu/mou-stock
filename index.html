@@ -840,7 +840,8 @@ function renderTable() {
   empty.style.display='none';
 
   tbody.innerHTML = rows.map(p => {
-    const {price,cost,value,pnl,ret} = calc(p);
+    const {price,priceUSD,cost,value,pnl,ret} = calc(p);
+    const displayPrice = isUSPos(p) && priceUSD!=null ? priceUSD : price;
     const cls  = pnlCls(pnl);
     const sign = pnlSign(pnl);
     const badgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':isGoldPos(p)?'gold':isUSPos(p)?'us':'short';
@@ -859,7 +860,7 @@ function renderTable() {
       <td style="font-variant-numeric:tabular-nums;">${p.shares.toLocaleString()}</td>
       <td style="font-variant-numeric:tabular-nums;">${fmtD(p.avgCost)}</td>
       <td style="font-variant-numeric:tabular-nums;">
-        <div style="font-weight:600;">${fmtD(price)}</div>
+        <div style="font-weight:600;">${isUSPos(p)?'$':' '}${fmtD(displayPrice)}${isUSPos(p)?'<span style="font-size:10px;color:var(--muted);margin-left:2px;">USD</span>':''}</div>
         ${daily!=null&&daily.change!=null?`<div class="${daily.change>0?'pos':daily.change<0?'neg':'neu'}" style="font-size:11px;">${daily.change>=0?'+':''}${daily.change.toFixed(2)}%</div>`:''}
       </td>
       <td style="font-variant-numeric:tabular-nums;">$${fmt(cost)}</td>
@@ -1295,7 +1296,9 @@ function delPosition(id) {
 // ════════════════════════════════════════════════
 function showDetailModal(id) {
   const p=positions.find(x=>x.id===id); if (!p) return;
-  const {price,cost,value,pnl,ret}=calc(p);
+  const {price,priceUSD,cost,value,pnl,ret}=calc(p);
+  const displayPrice = isUSPos(p) && priceUSD!=null ? priceUSD : price;
+  const priceLabel   = isUSPos(p) ? `${fmtD(displayPrice)} USD` : fmtD(displayPrice);
   const cls=pnlCls(pnl); const sign=pnlSign(pnl);
   const code=p.stockCode||'';
   const detailBadgeCls=p.type==='ETF'?'etf':p.type==='長期'?'long':isGoldPos(p)?'gold':isUSPos(p)?'us':'short';
@@ -1339,7 +1342,7 @@ function showDetailModal(id) {
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
       ${miniStat('持股股數', p.shares.toLocaleString()+' 股')}
       ${miniStat('成本均價', fmtD(p.avgCost))}
-      ${miniStat('現價', fmtD(price), pnl>=0?'var(--profit)':'var(--loss)')}
+      ${miniStat('現價', priceLabel, pnl>=0?'var(--profit)':'var(--loss)')}
       ${miniStat('成本 / 現值', `$${fmt(cost)} / $${fmt(value)}`)}
     </div>
     <!-- P&L -->
