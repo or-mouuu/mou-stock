@@ -224,7 +224,16 @@
 
     <!-- NW Card 3: 財富目標 -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
-      <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;flex-shrink:0;">財富目標</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-shrink:0;">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">財富目標</div>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span style="font-size:10px;color:var(--muted);">目前年齡</span>
+          <input id="userAgeInput" type="number" min="1" max="120" placeholder="—"
+            style="width:38px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text);text-align:center;-moz-appearance:textfield;"
+            oninput="userAge=parseFloat(this.value)||null;localStorage.setItem('user_age_v1',this.value||'');renderNetWorthCards()">
+          <span style="font-size:10px;color:var(--muted);">歲</span>
+        </div>
+      </div>
       <div id="nwGoal" style="flex:1;overflow-y:auto;min-height:0;"></div>
     </div>
 
@@ -544,6 +553,7 @@ function isTWPos(p)   { return !isUSPos(p)&&!isGoldPos(p); }
 let cashSnapshots = [];   // [{id, date, cash, twStock, usStock, gold, note}]
 let wealthGoals   = [];   // [{id, name, amount}]
 let emergencyFund = 600000;
+let userAge       = null;   // 使用者目前年齡（用於財富目標達成時幾歲）
 let cwPrincipal  = null;   // null = 自動用 currentTotal
 let cwMaxYears   = 30;
 let cwCategories = null;   // [{name,pct,rate}] — initialized in loadState
@@ -581,6 +591,7 @@ function loadState() {
     if(wg){ wealthGoals=JSON.parse(wg); }
     else { const old=parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0; if(old>0) wealthGoals=[{id:uid(),name:'財富目標',amount:old}]; }
     emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
+    const ua=localStorage.getItem('user_age_v1'); if(ua) userAge=parseFloat(ua)||null;
     try{ const cwc=localStorage.getItem('cw_categories_v1'); if(cwc) cwCategories=JSON.parse(cwc); }catch(e){}
   } catch(e){}
   if(!cwCategories) cwCategories=[
@@ -2382,6 +2393,9 @@ function renderNetWorthCards(){
   }
 
   // ── Card 3: 財富目標（多個） ──
+  // 同步年齡 input 的顯示值（renderNetWorthCards 會重繪卡片但 input 在卡片外）
+  const ageInput=document.getElementById('userAgeInput');
+  if(ageInput&&userAge) ageInput.value=userAge;
   let goalsHtml='';
   wealthGoals.forEach((goal,i)=>{
     const amt=goal.amount||0;
@@ -2418,7 +2432,7 @@ function renderNetWorthCards(){
       <div style="background:var(--border);border-radius:999px;height:8px;overflow:hidden;margin-bottom:4px;">
         <div style="height:100%;border-radius:999px;background:${progress>=100?'#16a34a':'#3b82f6'};width:${progress.toFixed(1)}%;transition:width .4s;"></div>
       </div>
-      ${estMonths!==null?`<div style="font-size:11px;color:var(--muted);">約 <span style="font-weight:700;color:#3b82f6;">${estMonths}</span> 個月 · 預計 ${addMonthsLabel(estMonths)}</div>`:''}
+      ${estMonths!==null?`<div style="font-size:11px;color:var(--muted);">約 <span style="font-weight:700;color:#3b82f6;">${estMonths}</span> 個月 · 預計 ${addMonthsLabel(estMonths)}${userAge?` · <span style="font-weight:700;color:var(--text);">${Math.floor(userAge+estMonths/12)}</span> 歲時達成`:''}</div>`:''}
       `:'<div style="font-size:11px;color:var(--subtle);">填入目標金額後顯示進度</div>'}
     </div>`;
   });
