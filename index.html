@@ -875,8 +875,10 @@ function renderTable() {
 
 function setTab(tab) {
   currentTab = tab;
-  ['all','long','short','etf','gold','us'].forEach(t =>
-    document.getElementById('tab-'+t).className = 'tab'+(t===tab?' active':''));
+  ['all','long','short','etf','gold','us'].forEach(t => {
+    const el = document.getElementById('tab-'+t);
+    if(el) el.className = 'tab'+(t===tab?' active':'');
+  });
   renderTable();
 }
 
@@ -892,6 +894,12 @@ function setMarket(m) {
   document.getElementById('stockCards').style.display      = isNet?'none':'grid';
   document.getElementById('netCards').style.display        = isNet?'grid':'none';
   document.getElementById('netWorthSection').style.display = isNet?'':'none';
+  // 台股/美股 只顯示 全部/長期/短期/ETF；總資產 顯示全部 tab
+  const showExtra = isNet;
+  document.getElementById('tab-gold').style.display = showExtra?'':'none';
+  document.getElementById('tab-us').style.display   = showExtra?'':'none';
+  // 若當前 tab 被隱藏，重置為「全部」
+  if(!showExtra && (currentTab==='gold'||currentTab==='us')) setTab('all');
   // positionsSection always visible; getFiltered handles filtering
   if(!isNet){
     const loading='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
