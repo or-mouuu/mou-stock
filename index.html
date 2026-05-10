@@ -289,18 +289,7 @@
     </div>
     <div style="overflow-x:auto;">
       <table>
-        <thead>
-          <tr>
-            <th style="padding-left:20px;">日期</th>
-            <th>現金餘額</th>
-            <th>台股市值</th>
-            <th>美股市值(TWD)</th>
-            <th>黃金市值</th>
-            <th>總資產</th>
-            <th>備註</th>
-            <th style="text-align:center;">操作</th>
-          </tr>
-        </thead>
+        <thead id="cashTableHead"></thead>
         <tbody id="cashTableBody"></tbody>
       </table>
       <div id="cashEmptyState" style="text-align:center;padding:60px 20px;color:var(--subtle);display:none;">
@@ -563,6 +552,7 @@ let bankAccounts  = [];   // [{id, name}]
 let _tmpBankAccts = [];   // temp copy while editing bank modal
 let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
 let _ytdVer   = 0;
+let _ytdChart = null;  // Chart.js instance for YTD line chart
 let editingId  = null;
 let splitId    = null;
 let splitSubRows = [];
@@ -1764,6 +1754,35 @@ async function fetchDec31PriceUS(ticker) {
   return null;
 }
 
+async function fetchYTDHistory(ticker){
+  const year = new Date().getFullYear();
+  const key  = `ytdHist_${ticker}_${todayStr()}`;
+  const c = sessionStorage.getItem(key); if(c) return JSON.parse(c);
+  const p1 = Math.floor(new Date(`${year}-01-01T00:00:00Z`).getTime()/1000);
+  const p2 = Math.floor(Date.now()/1000);
+  const bases = [
+    `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?period1=${p1}&period2=${p2}&interval=1d`,
+  ];
+  for(const base of bases){
+    for(const url of [base, `https://corsproxy.io/?${encodeURIComponent(base)}`]){
+      const d = await fetchJSON(url, 8000);
+      if(!d) continue;
+      const res = d?.chart?.result?.[0];
+      if(!res) continue;
+      const ts = res.timestamp;
+      const closes = res.indicators?.quote?.[0]?.close;
+      if(!ts||!closes) continue;
+      const data = ts.map((t,i)=>({
+        date: new Date(t*1000).toISOString().split('T')[0],
+        close: closes[i]
+      })).filter(x=>x.close!=null);
+      if(data.length){sessionStorage.setItem(key,JSON.stringify(data));return data;}
+    }
+  }
+  return null;
+}
+
 async function fetchDec31Price(code, market) {
   if (!code || market === 'us' || market === 'gold') return null;
   const key = `dec31p_2025_${code}`;
@@ -1782,40 +1801,166 @@ async function fetchDec31Price(code, market) {
 }
 
 async function fetchAndRenderYTD(){
-  const ver=_ytdVer;  // capture version; abort if market switches mid-flight
-  const el=document.getElementById('ytdContent');
-  const rate=usdTwdRate||32;
+  const ver = _ytdVer;
+  const el  = document.getElementById('ytdContent');
+  const rate = usdTwdRate||32;
 
-  function ytdBlock(label,val,note){
-    if(val===null) return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;"><div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${label}</div><div style="color:var(--subtle);font-size:13px;">無法取得</div></div>`;
-    const sign=val>=0?'+':'';
-    const col=val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
-    return `<div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${label}</div>
-      <div style="font-size:28px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${sign}${val.toFixed(2)}%</div>
-      ${note?`<div style="font-size:10px;color:var(--subtle);margin-top:4px;">${note}</div>`:''}
+  // ── Compact stat pill ──
+  function statPill(label, val, isExcess){
+    if(val===null) return `<div style="flex:1;padding:8px 10px;background:var(--hover-bg);border-radius:8px;text-align:center;">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:2px;">${label}</div>
+      <div style="font-size:12px;color:var(--subtle);">—</div></div>`;
+    const col = val>0?'var(--profit)':val<0?'var(--loss)':'var(--muted)';
+    const sign = val>=0?'+':'';
+    const bg = isExcess?(val>=0?'#eff6ff':'#fef2f2'):'var(--hover-bg)';
+    return `<div style="flex:1;padding:8px 10px;background:${bg};border-radius:8px;text-align:center;min-width:0;">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:2px;white-space:nowrap;">${label}</div>
+      <div style="font-size:14px;font-weight:700;color:${col};font-variant-numeric:tabular-nums;">${sign}${val.toFixed(2)}%</div>
     </div>`;
   }
-  function diffLine(diff){
-    if(diff===null) return '';
-    return `<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;font-size:12px;color:var(--muted);">
-      超額績效 <span class="${diff>=0?'pos':'neg'}" style="font-weight:700;font-size:14px;">${diff>=0?'+':''}${diff.toFixed(2)}%</span>
-    </div>`;
+
+  // ── Render chart from series data ──
+  function renderYTDLine(dates, portfolioSeries, benchSeries, portYTD, benchYTD, benchLabel){
+    if(ver!==_ytdVer) return;
+    const diff = portYTD!==null&&benchYTD!==null ? portYTD-benchYTD : null;
+    el.innerHTML=`
+      <div style="position:relative;height:200px;margin-bottom:8px;">
+        <canvas id="ytdChartCanvas"></canvas>
+      </div>
+      <div style="display:flex;gap:6px;">
+        ${statPill('持倉 YTD', portYTD, false)}
+        ${statPill(benchLabel+' YTD', benchYTD, false)}
+        ${statPill('超額績效', diff, true)}
+      </div>`;
+
+    if(_ytdChart){try{_ytdChart.destroy();}catch(e){} _ytdChart=null;}
+    const canvas = document.getElementById('ytdChartCanvas');
+    if(!canvas) return;
+    const isTW = currentMarket==='tw';
+    _ytdChart = new Chart(canvas.getContext('2d'),{
+      type:'line',
+      data:{
+        labels: dates,
+        datasets:[
+          {
+            label: '持倉',
+            data: portfolioSeries,
+            borderColor: isTW?'#3b82f6':'#8b5cf6',
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.2,
+            spanGaps: true,
+          },
+          {
+            label: benchLabel,
+            data: benchSeries,
+            borderColor: '#94a3b8',
+            backgroundColor: 'transparent',
+            borderWidth: 1.5,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            borderDash: [4,3],
+            tension: 0.2,
+            spanGaps: true,
+          }
+        ]
+      },
+      options:{
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins:{
+          legend:{display:true,position:'bottom',labels:{boxWidth:12,font:{size:10},padding:8}},
+          tooltip:{
+            mode:'index',intersect:false,
+            callbacks:{
+              label: ctx=>`${ctx.dataset.label}: ${ctx.raw!=null?(ctx.raw>=0?'+':'')+ctx.raw.toFixed(2)+'%':'—'}`
+            }
+          }
+        },
+        scales:{
+          x:{
+            ticks:{maxTicksLimit:5,font:{size:9},color:'#94a3b8',maxRotation:0},
+            grid:{display:false},
+          },
+          y:{
+            ticks:{callback:v=>(v>=0?'+':'')+v.toFixed(1)+'%',font:{size:9},color:'#94a3b8'},
+            grid:{color:'rgba(0,0,0,0.04)'},
+          }
+        }
+      }
+    });
+  }
+
+  // ── Build portfolio daily series from historical prices ──
+  async function buildPortfolioSeries(posList, isUS, allDates){
+    const dec31Prices = {};
+    await Promise.all(posList.map(async p=>{
+      const price = isUS ? await fetchDec31PriceUS(p.stockCode) : await fetchDec31Price(p.stockCode, p.market);
+      dec31Prices[p.id] = price;
+    }));
+    let portfolioBase = 0;
+    const posInfos = posList.map(p=>{
+      const d = dec31Prices[p.id];
+      const txs = p.transactions||[];
+      const oldSh = txs.length
+        ? txs.filter(t=>t.action==='buy'&&t.date<='2025-12-31').reduce((s,t)=>s+(t.shares||0),0)
+        : p.shares;
+      const base = d && oldSh>0 ? oldSh*d : 0;
+      if(base>0) portfolioBase += base;
+      return {p, oldSh, dec31Price: d, base};
+    });
+    if(portfolioBase<=0) return null;
+
+    // Fetch YTD history per position
+    const histories = {};
+    await Promise.all(posInfos.map(async ({p})=>{
+      let ticker;
+      if(isUS) ticker = p.stockCode;
+      else ticker = p.market==='otc' ? p.stockCode+'.TWO' : p.stockCode+'.TW';
+      histories[p.id] = await fetchYTDHistory(ticker);
+    }));
+
+    // For each benchmark date, compute portfolio value
+    return allDates.map(date=>{
+      let value = 0;
+      posInfos.forEach(({p, oldSh, dec31Price, base})=>{
+        if(!base||oldSh<=0) return;
+        const hist = histories[p.id];
+        if(!hist){ value+=base; return; }
+        const entry = [...hist].reverse().find(x=>x.date<=date);
+        value += entry ? oldSh*entry.close : base;
+      });
+      return portfolioBase>0 ? (value-portfolioBase)/portfolioBase*100 : null;
+    });
   }
 
   if(currentMarket==='tw'){
+    el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
+    const realizedTW = parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
+    const twPos = positions.filter(p=>isTWPos(p));
+
+    // Fetch TAIEX benchmark history
+    const benchHist = await fetchYTDHistory('^TWII');
+    if(ver!==_ytdVer) return;
+
+    const benchDates  = benchHist ? benchHist.map(x=>x.date) : [];
+    const benchBase   = benchHist?.[0]?.close ?? null;
+    const benchSeries = benchHist && benchBase ? benchHist.map(x=>(x.close-benchBase)/benchBase*100) : [];
+    const benchYTD    = benchSeries.length ? benchSeries[benchSeries.length-1] : null;
+
+    // Also compute current scalar YTD for stats (using existing method as fallback)
     const BASE_KEY='taiex_dec31_2025';
     let taiexBase=parseFloat(localStorage.getItem(BASE_KEY)||'');
-    const [taiexNowRaw]=await Promise.all([
-      fetchTAIEXFromHistory(todayStr()),
-      (async()=>{if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}})()
-    ]);
-    let taiexNow=taiexNowRaw;
-    if(!taiexNow) taiexNow=await fetchTAIEXFromHistory(prevTradingDay());
-    const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:null;
-    const realizedTW=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
-    const twPos=positions.filter(p=>isTWPos(p));
-    let twYTD=null;
+    if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}
+    const taiexNowRaw=await fetchTAIEXFromHistory(todayStr());
+    const taiexNow=taiexNowRaw||await fetchTAIEXFromHistory(prevTradingDay());
+    const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:benchYTD;
+
+    // Portfolio scalar YTD (existing logic)
+    let portYTD=null;
     if(twPos.length){
       const dp31=await Promise.all(twPos.map(p=>fetchDec31Price(p.stockCode,p.market)));
       let ytdBase=0,ytdCur=0;
@@ -1828,19 +1973,50 @@ async function fetchAndRenderYTD(){
         const base=(d&&oldSh>0?oldSh*d:(!d&&oldSh>0?oldSh*p.avgCost:0))+new26;
         if(base>0){ytdBase+=base;ytdCur+=value;}
       });
-      if(ytdBase>0) twYTD=(ytdCur-ytdBase+realizedTW)/ytdBase*100;
+      if(ytdBase>0) portYTD=(ytdCur-ytdBase+realizedTW)/ytdBase*100;
     }
-    const diff=twYTD!==null&&taiexYTD!==null?twYTD-taiexYTD:null;
     if(ver!==_ytdVer) return;
-    el.innerHTML=ytdBlock('持倉 YTD',twYTD,'2025/12/31 收盤為基準')+ytdBlock('台股加權指數',taiexYTD,'TWSE')+diffLine(diff);
+
+    // Build portfolio daily series
+    let portSeries = null;
+    if(twPos.length && benchDates.length){
+      portSeries = await buildPortfolioSeries(twPos, false, benchDates);
+    }
+    if(ver!==_ytdVer) return;
+
+    // If no historical for portfolio, fake a straight line to current YTD
+    if(!portSeries && portYTD!==null && benchDates.length){
+      portSeries = benchDates.map((_,i,arr)=> portYTD * (i+1)/arr.length);
+    }
+
+    renderYTDLine(
+      benchDates.map(d=>d.slice(5)), // MM-DD labels
+      portSeries||[],
+      benchSeries,
+      portYTD, taiexYTD,
+      '加權指數'
+    );
 
   } else {
+    el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
+    const realizedUS = parseFloat(localStorage.getItem('realized_pnl_us_v1')||'0')||0;
+    const usPos = positions.filter(p=>isUSPos(p));
+
+    const benchHist = await fetchYTDHistory('VTI');
+    if(ver!==_ytdVer) return;
+
+    const benchDates  = benchHist ? benchHist.map(x=>x.date) : [];
+    const benchBase   = benchHist?.[0]?.close ?? null;
+    const benchSeries = benchHist && benchBase ? benchHist.map(x=>(x.close-benchBase)/benchBase*100) : [];
+    const benchYTD    = benchSeries.length ? benchSeries[benchSeries.length-1] : null;
+
+    // Scalar VTI YTD
     const [vtiNowData,vtiBase]=await Promise.all([fetchYahooPrice('VTI'),fetchDec31PriceUS('VTI')]);
     const vtiNow=vtiNowData?.price;
-    const vtiYTD=(vtiNow&&vtiBase>0)?(vtiNow-vtiBase)/vtiBase*100:null;
-    const realizedUS=parseFloat(localStorage.getItem('realized_pnl_us_v1')||'0')||0;
-    const usPos=positions.filter(p=>isUSPos(p));
-    let usYTD=null;
+    const vtiYTD=(vtiNow&&vtiBase>0)?(vtiNow-vtiBase)/vtiBase*100:benchYTD;
+
+    // Portfolio scalar YTD
+    let portYTD=null;
     if(usPos.length){
       const dp31us=await Promise.all(usPos.map(p=>fetchDec31PriceUS(p.stockCode)));
       let ytdBase=0,ytdCur=0;
@@ -1853,11 +2029,27 @@ async function fetchAndRenderYTD(){
         const base=(d&&oldSh>0?oldSh*d*rate:(!d&&oldSh>0?oldSh*p.avgCost*rate:0))+new26;
         if(base>0){ytdBase+=base;ytdCur+=value;}
       });
-      if(ytdBase>0) usYTD=(ytdCur-ytdBase+realizedUS)/ytdBase*100;
+      if(ytdBase>0) portYTD=(ytdCur-ytdBase+realizedUS)/ytdBase*100;
     }
-    const diff=usYTD!==null&&vtiYTD!==null?usYTD-vtiYTD:null;
     if(ver!==_ytdVer) return;
-    el.innerHTML=ytdBlock('持倉 YTD',usYTD,'2025/12/31 USD 收盤為基準')+ytdBlock('VTI',vtiYTD,'Vanguard Total Market ETF')+diffLine(diff);
+
+    let portSeries = null;
+    if(usPos.length && benchDates.length){
+      portSeries = await buildPortfolioSeries(usPos, true, benchDates);
+    }
+    if(ver!==_ytdVer) return;
+
+    if(!portSeries && portYTD!==null && benchDates.length){
+      portSeries = benchDates.map((_,i,arr)=> portYTD * (i+1)/arr.length);
+    }
+
+    renderYTDLine(
+      benchDates.map(d=>d.slice(5)),
+      portSeries||[],
+      benchSeries,
+      portYTD, vtiYTD,
+      'VTI'
+    );
   }
 }
 
@@ -2073,37 +2265,109 @@ function renderNetWorthCards(){
 }
 
 function renderCashTable(){
-  const tbody=document.getElementById('cashTableBody');
-  const empty=document.getElementById('cashEmptyState');
+  const thead = document.getElementById('cashTableHead');
+  const tbody = document.getElementById('cashTableBody');
+  const empty = document.getElementById('cashEmptyState');
   if(!tbody) return;
-  const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
-  if(!sorted.length){tbody.innerHTML='';empty.style.display='block';return;}
+  const sorted = [...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+  if(!sorted.length){
+    if(thead) thead.innerHTML='';
+    tbody.innerHTML='';
+    empty.style.display='block';
+    return;
+  }
   empty.style.display='none';
-  tbody.innerHTML=sorted.map(r=>{
-    const cashTotal=getCashTotal(r);
-    const total=cashTotal+(r.twStock||0)+(r.usStock||0)+(r.gold||0);
-    // 帳戶明細（若有 accounts 且 bankAccounts 已設定）
-    let cashCell=`<span style="font-weight:500;">$${fmt(cashTotal)}</span>`;
-    if(r.accounts && bankAccounts.length){
-      const lines=bankAccounts
-        .filter(a=>r.accounts[a.id]>0)
-        .map(a=>`<div style="font-size:10px;color:var(--subtle);white-space:nowrap;">${escHtml(a.name)}&nbsp;$${fmt(r.accounts[a.id])}</div>`)
-        .join('');
-      if(lines) cashCell+=`<div style="margin-top:2px;">${lines}</div>`;
+
+  const hasAccts = bankAccounts.length > 0;
+
+  // ── Header ──
+  if(thead){
+    if(hasAccts){
+      thead.innerHTML=`<tr>
+        <th style="padding-left:20px;">日期</th>
+        ${bankAccounts.map(a=>`<th>${escHtml(a.name)}</th>`).join('')}
+        <th>現金合計</th>
+        <th>備註</th>
+        <th style="text-align:center;">操作</th>
+      </tr>`;
+    } else {
+      thead.innerHTML=`<tr>
+        <th style="padding-left:20px;">日期</th>
+        <th>現金餘額</th>
+        <th>備註</th>
+        <th style="text-align:center;">操作</th>
+      </tr>`;
     }
-    return `<tr>
-      <td style="padding-left:20px;font-weight:500;">${r.date}</td>
-      <td>${cashCell}</td>
-      <td>${r.twStock!=null?'$'+fmt(r.twStock):'—'}</td>
-      <td>${r.usStock!=null?'$'+fmt(r.usStock):'—'}</td>
-      <td>${r.gold!=null?'$'+fmt(r.gold):'—'}</td>
-      <td style="font-weight:700;">$${fmt(total)}</td>
-      <td style="color:var(--muted);font-size:12px;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
-      <td style="text-align:center;white-space:nowrap;">
-        <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
-        <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
-      </td>
-    </tr>`;
+  }
+
+  // ── Body ──
+  tbody.innerHTML = sorted.map((r,idx)=>{
+    const cashTotal = getCashTotal(r);
+    const prev = sorted[idx+1]; // older record
+
+    if(hasAccts){
+      const acctCells = bankAccounts.map(a=>{
+        const val = r.accounts?.[a.id] ?? null;
+        const prevVal = prev?.accounts?.[a.id] ?? null;
+        let diffHtml = '';
+        if(val !== null && prevVal !== null){
+          const diff = val - prevVal;
+          if(diff !== 0){
+            const cls = diff > 0 ? 'pos' : 'neg';
+            const sign = diff > 0 ? '+' : '';
+            diffHtml = `<div class="${cls}" style="font-size:10px;">${sign}${fmt(diff)}</div>`;
+          }
+        }
+        return `<td style="font-variant-numeric:tabular-nums;">
+          ${val !== null ? '$'+fmt(val) : '<span style="color:var(--subtle);">—</span>'}
+          ${diffHtml}
+        </td>`;
+      }).join('');
+
+      // total diff vs prev
+      const prevTotal = prev ? getCashTotal(prev) : null;
+      let totalDiffHtml = '';
+      if(prevTotal !== null){
+        const diff = cashTotal - prevTotal;
+        if(diff !== 0){
+          const cls = diff > 0 ? 'pos' : 'neg';
+          totalDiffHtml = `<div class="${cls}" style="font-size:10px;">${diff>0?'+':''}${fmt(diff)}</div>`;
+        }
+      }
+
+      return `<tr>
+        <td style="padding-left:20px;font-weight:500;white-space:nowrap;">${r.date}</td>
+        ${acctCells}
+        <td style="font-weight:600;font-variant-numeric:tabular-nums;">
+          $${fmt(cashTotal)}${totalDiffHtml}
+        </td>
+        <td style="color:var(--muted);font-size:12px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
+        </td>
+      </tr>`;
+    } else {
+      // no accounts: simple view
+      const prevTotal = prev ? getCashTotal(prev) : null;
+      let diffHtml = '';
+      if(prevTotal !== null){
+        const diff = cashTotal - prevTotal;
+        if(diff !== 0){
+          const cls = diff>0?'pos':'neg';
+          diffHtml=`<div class="${cls}" style="font-size:10px;">${diff>0?'+':''}${fmt(diff)}</div>`;
+        }
+      }
+      return `<tr>
+        <td style="padding-left:20px;font-weight:500;white-space:nowrap;">${r.date}</td>
+        <td style="font-variant-numeric:tabular-nums;">$${fmt(cashTotal)}${diffHtml}</td>
+        <td style="color:var(--muted);font-size:12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
+        </td>
+      </tr>`;
+    }
   }).join('');
 }
 
