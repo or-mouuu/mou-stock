@@ -1818,6 +1818,90 @@ async function fetchDec31PriceUS(ticker) {
   return null;
 }
 
+// ── TWSE STOCK_DAY 月度資料（回傳該月所有交易日） ──
+async function fetchTWSEMonthly(code, year, month){
+  const key=`twse_mo_${code}_${year}_${month}`;
+  const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
+  const dateStr=`${year}${String(month).padStart(2,'0')}01`;
+  const d=await fetchWithProxy(`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${dateStr}&stockNo=${code}`);
+  if(d?.stat==='OK'&&d.data?.length){
+    const rows=d.data.map(r=>{
+      const parts=(r[0]||'').split('/');
+      const close=parseFloat((r[6]||'').replace(/,/g,''));
+      if(parts.length===3&&!isNaN(close)&&close>0)
+        return {date:`${+parts[0]+1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`,close};
+      return null;
+    }).filter(Boolean);
+    if(rows.length){sessionStorage.setItem(key,JSON.stringify(rows));return rows;}
+  }
+  return [];
+}
+// ── TPEX OTC 月度資料 ──
+async function fetchTPEXMonthly(code, year, month){
+  const key=`tpex_mo_${code}_${year}_${month}`;
+  const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
+  const rocYear=year-1911;
+  const rocDate=`${rocYear}/${String(month).padStart(2,'0')}/01`;
+  const d=await fetchWithProxy(`https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${rocDate}&stkno=${code}`);
+  if(d?.aaData?.length){
+    const rows=d.aaData.map(r=>{
+      const parts=(r[0]||'').split('/');
+      const close=parseFloat((r[6]||'').replace(/,/g,''));
+      if(parts.length===3&&!isNaN(close)&&close>0)
+        return {date:`${+parts[0]+1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`,close};
+      return null;
+    }).filter(Boolean);
+    if(rows.length){sessionStorage.setItem(key,JSON.stringify(rows));return rows;}
+  }
+  return [];
+}
+// ── 台股個股 YTD 日線（TWSE/TPEX 月度拼接，Yahoo Finance 為備用） ──
+async function fetchTWStockYTD(code, market){
+  const key=`twytd_${code}_${todayStr()}`;
+  const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
+  const year=new Date().getFullYear(), nowMonth=new Date().getMonth()+1;
+  let allRows=[];
+  for(let m=1;m<=nowMonth;m++){
+    const rows=market==='otc'
+      ? await fetchTPEXMonthly(code,year,m)
+      : await fetchTWSEMonthly(code,year,m);
+    allRows.push(...rows);
+  }
+  if(allRows.length>5){sessionStorage.setItem(key,JSON.stringify(allRows));return allRows;}
+  // 備用：Yahoo Finance .TW / .TWO
+  const yf=await fetchYTDHistory(market==='otc'?code+'.TWO':code+'.TW');
+  if(yf&&yf.length>5){sessionStorage.setItem(key,JSON.stringify(yf));return yf;}
+  return null;
+}
+// ── TAIEX YTD 日線（Yahoo Finance ^TWII 優先，TWSE MI_5MINS_HIST 備用） ──
+async function fetchTAIEXYTD(){
+  const key=`taiexytd_${todayStr()}`;
+  const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
+  // 1. Yahoo Finance ^TWII
+  const yf=await fetchYTDHistory('^TWII');
+  if(yf&&yf.length>10){sessionStorage.setItem(key,JSON.stringify(yf));return yf;}
+  // 2. TWSE MI_5MINS_HIST（若回應含日期欄則為月度格式）
+  const year=new Date().getFullYear(), nowMonth=new Date().getMonth()+1;
+  let allRows=[];
+  for(let m=1;m<=nowMonth;m++){
+    const dateStr=`${year}${String(m).padStart(2,'0')}01`;
+    const d=await fetchWithProxy(`https://www.twse.com.tw/indicesReport/MI_5MINS_HIST?response=json&date=${dateStr}`);
+    if(d?.stat==='OK'&&d.data?.length){
+      const first=d.data[0];
+      if(first&&String(first[0]||'').includes('/')){
+        d.data.forEach(r=>{
+          const parts=(r[0]||'').split('/');
+          const val=parseFloat((r[1]||'').replace(/,/g,''));
+          if(parts.length===3&&!isNaN(val)&&val>0)
+            allRows.push({date:`${+parts[0]+1911}-${parts[1].padStart(2,'0')}-${parts[2].padStart(2,'0')}`,close:val});
+        });
+      }
+    }
+  }
+  if(allRows.length>5){sessionStorage.setItem(key,JSON.stringify(allRows));return allRows;}
+  return null;
+}
+
 async function fetchYTDHistory(ticker){
   const year = new Date().getFullYear();
   const key  = `ytdHist_${ticker}_${todayStr()}`;
@@ -2003,27 +2087,27 @@ async function fetchAndRenderYTD(){
 
   if(currentMarket==='tw'){
     el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
-    const realizedTW = parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
-    const twPos = positions.filter(p=>isTWPos(p));
+    const realizedTW=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
+    const twPos=positions.filter(p=>isTWPos(p));
 
-    // Fetch TAIEX benchmark history
-    const benchHist = await fetchYTDHistory('^TWII');
+    // 台股基準：TAIEX YTD 日線（先 Yahoo Finance，再 TWSE）
+    const benchHist=await fetchTAIEXYTD();
     if(ver!==_ytdVer) return;
 
     const benchDates  = benchHist ? benchHist.map(x=>x.date) : [];
     const benchBase   = benchHist?.[0]?.close ?? null;
-    const benchSeries = benchHist && benchBase ? benchHist.map(x=>(x.close-benchBase)/benchBase*100) : [];
-    const benchYTD    = benchSeries.length ? benchSeries[benchSeries.length-1] : null;
+    const benchSeries = benchHist&&benchBase ? benchHist.map(x=>(x.close-benchBase)/benchBase*100) : [];
 
-    // Also compute current scalar YTD for stats (using existing method as fallback)
+    // TAIEX YTD scalar（現有方法備用）
     const BASE_KEY='taiex_dec31_2025';
     let taiexBase=parseFloat(localStorage.getItem(BASE_KEY)||'');
     if(isNaN(taiexBase)||taiexBase<=0){const v=await fetchTAIEXFromHistory('20251231');if(v){taiexBase=v;localStorage.setItem(BASE_KEY,String(v));}}
     const taiexNowRaw=await fetchTAIEXFromHistory(todayStr());
     const taiexNow=taiexNowRaw||await fetchTAIEXFromHistory(prevTradingDay());
-    const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100:benchYTD;
+    const taiexYTD=(taiexNow&&taiexBase>0)?(taiexNow-taiexBase)/taiexBase*100
+                  :benchSeries.length?benchSeries[benchSeries.length-1]:null;
 
-    // Portfolio scalar YTD (existing logic)
+    // 持倉 YTD scalar
     let portYTD=null;
     if(twPos.length){
       const dp31=await Promise.all(twPos.map(p=>fetchDec31Price(p.stockCode,p.market)));
@@ -2041,25 +2125,43 @@ async function fetchAndRenderYTD(){
     }
     if(ver!==_ytdVer) return;
 
-    // Build portfolio daily series
-    let portSeries = null;
-    if(twPos.length && benchDates.length){
-      portSeries = await buildPortfolioSeries(twPos, false, benchDates);
+    // 持倉日線：TWSE STOCK_DAY 月度拼接
+    let portSeries=null;
+    if(twPos.length&&benchDates.length){
+      const dec31Prices={};
+      await Promise.all(twPos.map(async p=>{dec31Prices[p.id]=await fetchDec31Price(p.stockCode,p.market);}));
+      let portfolioBase=0;
+      const posInfos=twPos.map(p=>{
+        const d=dec31Prices[p.id];
+        const txs=p.transactions||[];
+        const oldSh=txs.length?txs.filter(t=>t.action==='buy'&&t.date<='2025-12-31').reduce((s,t)=>s+(t.shares||0),0):p.shares;
+        const base=d&&oldSh>0?oldSh*d:0;
+        if(base>0) portfolioBase+=base;
+        return {p,oldSh,base};
+      });
+      if(portfolioBase>0){
+        const histories={};
+        await Promise.all(posInfos.map(async ({p})=>{histories[p.id]=await fetchTWStockYTD(p.stockCode,p.market||'tse');}));
+        if(ver!==_ytdVer) return;
+        portSeries=benchDates.map(date=>{
+          let value=0;
+          posInfos.forEach(({p,oldSh,base})=>{
+            if(!base||!oldSh) return;
+            const hist=histories[p.id];
+            if(!hist){value+=base;return;}
+            const entry=[...hist].reverse().find(x=>x.date<=date);
+            value+=entry?oldSh*entry.close:base;
+          });
+          return portfolioBase>0?(value-portfolioBase)/portfolioBase*100:null;
+        });
+      }
     }
     if(ver!==_ytdVer) return;
+    // 備用：線性插值
+    if(!portSeries&&portYTD!==null&&benchDates.length)
+      portSeries=benchDates.map((_,i,a)=>portYTD*(i+1)/a.length);
 
-    // If no historical for portfolio, fake a straight line to current YTD
-    if(!portSeries && portYTD!==null && benchDates.length){
-      portSeries = benchDates.map((_,i,arr)=> portYTD * (i+1)/arr.length);
-    }
-
-    renderYTDLine(
-      benchDates.map(d=>d.slice(5)), // MM-DD labels
-      portSeries||[],
-      benchSeries,
-      portYTD, taiexYTD,
-      '加權指數'
-    );
+    renderYTDLine(benchDates.map(d=>d.slice(5)),portSeries||[],benchSeries,portYTD,taiexYTD,'加權指數');
 
   } else {
     el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
