@@ -554,6 +554,7 @@ let _tmpBankAccts = [];   // temp copy while editing bank modal
 let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
 let _ytdVer   = 0;
 let _ytdChart = null;  // Chart.js instance for YTD line chart
+let _ytdCache = {};    // in-memory cache: key → {dates,portSeries,benchSeries,portYTD,benchYTD,benchLabel}
 let editingId  = null;
 let splitId    = null;
 let splitSubRows = [];
@@ -595,6 +596,7 @@ function saveState() {
   localStorage.setItem('cash_snapshots_v1', JSON.stringify(cashSnapshots));
   localStorage.setItem('bank_accounts_v1',  JSON.stringify(bankAccounts));
   localStorage.setItem('wealth_goals_v2',   JSON.stringify(wealthGoals));
+  _ytdCache = {}; // 持倉異動時清除 YTD cache
 }
 function saveWealthGoals(){
   localStorage.setItem('wealth_goals_v2', JSON.stringify(wealthGoals));
@@ -2086,6 +2088,13 @@ async function fetchAndRenderYTD(){
   }
 
   if(currentMarket==='tw'){
+    // ── 命中 cache → 直接渲染，跳過所有 API ──
+    const _twKey=ytdCacheKey('tw');
+    if(_ytdCache[_twKey]){
+      const _c=_ytdCache[_twKey];
+      renderYTDLine(_c.dates,_c.portSeries,_c.benchSeries,_c.portYTD,_c.benchYTD,_c.benchLabel);
+      return;
+    }
     el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
     const realizedTW=parseFloat(localStorage.getItem('realized_pnl_v1')||'0')||0;
     const twPos=positions.filter(p=>isTWPos(p));
@@ -2161,9 +2170,19 @@ async function fetchAndRenderYTD(){
     if(!portSeries&&portYTD!==null&&benchDates.length)
       portSeries=benchDates.map((_,i,a)=>portYTD*(i+1)/a.length);
 
-    renderYTDLine(benchDates.map(d=>d.slice(5)),portSeries||[],benchSeries,portYTD,taiexYTD,'加權指數');
+    // ── 存入 cache ──
+    const _twDates=benchDates.map(d=>d.slice(5));
+    _ytdCache[_twKey]={dates:_twDates,portSeries:portSeries||[],benchSeries,portYTD,benchYTD:taiexYTD,benchLabel:'加權指數'};
+    renderYTDLine(_twDates,portSeries||[],benchSeries,portYTD,taiexYTD,'加權指數');
 
   } else {
+    // ── 命中 cache → 直接渲染 ──
+    const _usKey=ytdCacheKey('us');
+    if(_ytdCache[_usKey]){
+      const _c=_ytdCache[_usKey];
+      renderYTDLine(_c.dates,_c.portSeries,_c.benchSeries,_c.portYTD,_c.benchYTD,_c.benchLabel);
+      return;
+    }
     el.innerHTML='<div style="text-align:center;color:var(--subtle);padding:20px;font-size:13px;">載入中…</div>';
     const realizedUS = parseFloat(localStorage.getItem('realized_pnl_us_v1')||'0')||0;
     const usPos = positions.filter(p=>isUSPos(p));
@@ -2209,19 +2228,22 @@ async function fetchAndRenderYTD(){
       portSeries = benchDates.map((_,i,arr)=> portYTD * (i+1)/arr.length);
     }
 
-    renderYTDLine(
-      benchDates.map(d=>d.slice(5)),
-      portSeries||[],
-      benchSeries,
-      portYTD, vtiYTD,
-      'VTI'
-    );
+    // ── 存入 cache ──
+    const _usDates=benchDates.map(d=>d.slice(5));
+    _ytdCache[_usKey]={dates:_usDates,portSeries:portSeries||[],benchSeries,portYTD,benchYTD:vtiYTD,benchLabel:'VTI'};
+    renderYTDLine(_usDates,portSeries||[],benchSeries,portYTD,vtiYTD,'VTI');
   }
 }
 
 // ════════════════════════════════════════════════
 // NET WORTH VIEW
 // ════════════════════════════════════════════════
+function ytdCacheKey(market){
+  const pos=positions.filter(p=>market==='tw'?isTWPos(p):isUSPos(p));
+  const hash=pos.map(p=>p.stockCode+':'+p.shares).sort().join('|');
+  return market+'_'+todayStr()+'_'+hash;
+}
+
 function monthsBetween(d1,d2){
   const a=new Date(d1),b=new Date(d2);
   return(b.getFullYear()-a.getFullYear())*12+(b.getMonth()-a.getMonth());
