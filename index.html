@@ -2322,28 +2322,28 @@ function renderNetWorthCards(){
         <button onclick="cwPrincipal=null;renderNetWorthCards()" title="重置為總資產"
           style="font-size:13px;color:var(--muted);border:1px solid var(--border);border-radius:5px;background:var(--hover-bg);cursor:pointer;padding:2px 7px;line-height:1.5;margin-bottom:1px;">↺</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 46px 50px 18px;gap:3px;align-items:center;margin-bottom:3px;">
+      <div style="display:grid;grid-template-columns:54px 1fr 1fr 18px;gap:3px;align-items:center;margin-bottom:3px;">
         <span style="font-size:10px;color:var(--muted);font-weight:600;">類別</span>
         <span style="font-size:10px;color:var(--muted);text-align:center;font-weight:600;">佔比</span>
         <span style="font-size:10px;color:var(--muted);text-align:center;font-weight:600;">年化</span>
         <span></span>
       </div>
       ${cwCategories.map((cat,i)=>`
-        <div style="display:grid;grid-template-columns:1fr 46px 50px 18px;gap:3px;align-items:center;margin-bottom:3px;">
+        <div style="display:grid;grid-template-columns:54px 1fr 1fr 18px;gap:3px;align-items:center;margin-bottom:3px;">
           <input type="text" value="${escHtml(cat.name)}"
             onchange="cwCategories[${i}].name=this.value;saveCWCategories();renderNetWorthCards()"
-            style="font-size:11px;font-weight:600;color:${catColors[i%catColors.length]};border:1px solid var(--border);border-radius:4px;padding:2px 5px;background:var(--bg);min-width:0;">
-          <div style="display:flex;align-items:center;gap:1px;">
+            style="font-size:11px;font-weight:600;color:${catColors[i%catColors.length]};border:1px solid var(--border);border-radius:4px;padding:2px 4px;background:var(--bg);min-width:0;width:100%;box-sizing:border-box;">
+          <div style="display:flex;align-items:center;gap:1px;min-width:0;">
             <input type="number" value="${cat.pct}" min="0" max="100" step="1"
               onchange="cwCategories[${i}].pct=parseFloat(this.value)||0;saveCWCategories();renderNetWorthCards()"
-              style="width:30px;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:right;background:var(--bg);color:var(--text);">
-            <span style="font-size:10px;color:var(--muted);">%</span>
+              style="flex:1;min-width:0;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:right;background:var(--bg);color:var(--text);">
+            <span style="font-size:10px;color:var(--muted);flex-shrink:0;">%</span>
           </div>
-          <div style="display:flex;align-items:center;gap:1px;">
+          <div style="display:flex;align-items:center;gap:1px;min-width:0;">
             <input type="number" value="${cat.rate}" min="0" max="50" step="0.1"
               onchange="cwCategories[${i}].rate=parseFloat(this.value)||0;saveCWCategories();renderNetWorthCards()"
-              style="width:34px;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:right;background:var(--bg);color:var(--text);">
-            <span style="font-size:10px;color:var(--muted);">%</span>
+              style="flex:1;min-width:0;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:right;background:var(--bg);color:var(--text);">
+            <span style="font-size:10px;color:var(--muted);flex-shrink:0;">%</span>
           </div>
           <button onclick="cwCategories.splice(${i},1);saveCWCategories();renderNetWorthCards()"
             style="font-size:11px;color:var(--subtle);background:none;border:none;cursor:pointer;padding:0;text-align:center;line-height:1;">✕</button>
