@@ -214,11 +214,10 @@
       <div id="nwAllocTotal" style="flex-shrink:0;"></div>
     </div>
 
-    <!-- NW Card 2: 總資產 -->
+    <!-- NW Card 2: 複利試算 -->
     <div class="card" style="padding:16px;display:flex;flex-direction:column;height:360px;">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-shrink:0;">
-        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">總資產</div>
-        <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="showAddCashModal()">+ 記錄現金</button>
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;">複利試算</div>
       </div>
       <div id="nwTotal" style="flex:1;overflow-y:auto;min-height:0;"></div>
     </div>
@@ -554,8 +553,11 @@ function isUSPos(p)   { return p.market==='us'||p.currency==='USD'; }
 function isGoldPos(p) { return p.market==='gold'||p.type==='黃金'; }
 function isTWPos(p)   { return !isUSPos(p)&&!isGoldPos(p); }
 let cashSnapshots = [];   // [{id, date, cash, twStock, usStock, gold, note}]
-let wealthGoal    = 0;    // TWD target
+let wealthGoals   = [];   // [{id, name, amount}]
 let emergencyFund = 600000;
+let cwPrincipal   = null; // null = 自動用 currentTotal
+let cwRates       = [4, 6, 8, 10];
+let cwYears       = [5, 10, 20, 30];
 let editingCashId = null;
 let bankAccounts  = [];   // [{id, name}]
 let _tmpBankAccts = [];   // temp copy while editing bank modal
@@ -583,7 +585,9 @@ function loadState() {
   try {
     const cs=localStorage.getItem('cash_snapshots_v1'); if(cs) cashSnapshots=JSON.parse(cs);
     const ba=localStorage.getItem('bank_accounts_v1');  if(ba) bankAccounts=JSON.parse(ba);
-    wealthGoal   =parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0;
+    const wg=localStorage.getItem('wealth_goals_v2');
+    if(wg){ wealthGoals=JSON.parse(wg); }
+    else { const old=parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0; if(old>0) wealthGoals=[{id:uid(),name:'財富目標',amount:old}]; }
     emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
   } catch(e){}
   positions.forEach(p=>{ if(p.type==='美股') p.type='長期'; });
@@ -593,6 +597,10 @@ function saveState() {
   localStorage.setItem(PRICES_KEY,  JSON.stringify(prices));
   localStorage.setItem('cash_snapshots_v1', JSON.stringify(cashSnapshots));
   localStorage.setItem('bank_accounts_v1',  JSON.stringify(bankAccounts));
+  localStorage.setItem('wealth_goals_v2',   JSON.stringify(wealthGoals));
+}
+function saveWealthGoals(){
+  localStorage.setItem('wealth_goals_v2', JSON.stringify(wealthGoals));
 }
 function saveTypePref(name, type) {
   const p = JSON.parse(localStorage.getItem(PREFS_KEY)||'{}'); p[name]=type;
@@ -780,6 +788,7 @@ function daysSince(dateStr) {
 // ════════════════════════════════════════════════
 function fmt(n)       { return isNaN(n)?'—':Math.round(n).toLocaleString('zh-TW'); }
 function fmtD(n,d=2)  { return isNaN(n)?'—':Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d}); }
+function fmtWan(n)    { if(!n||isNaN(n)) return '—'; if(n>=1e8) return (n/1e8).toFixed(2)+'億'; return Math.round(n/1e4).toLocaleString('zh-TW')+'萬'; }
 function pnlCls(n)    { return n>0?'pos':n<0?'neg':'neu'; }
 function pnlSign(n)   { return n>0?'+':''; }
 function uid()        { return crypto?.randomUUID?.()||'id-'+Math.random().toString(36).slice(2)+Date.now(); }
@@ -1874,7 +1883,7 @@ function renderNetWorthCards(){
   const usValue  =positions.filter(p=>isUSPos(p)).reduce((s,p)=>s+calc(p).value,0);
   const goldValue=positions.filter(p=>isGoldPos(p)).reduce((s,p)=>s+calc(p).value,0);
   const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
-  const latest=sorted[0], prev=sorted[1];
+  const latest=sorted[0];
   const cashNow=latest?getCashTotal(latest):0;
   const currentTotal=cashNow+twValue+usValue+goldValue;
 
@@ -1895,75 +1904,149 @@ function renderNetWorthCards(){
       </div>
       <div style="font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;">$${fmt(s.v)}</div>
     </div>`).join(''):'<div style="color:var(--subtle);font-size:12px;padding:4px;">尚無資料</div>';
+
+  // Card 1: 成長幅度比較
+  const now=new Date();
+  const currentYear=now.getFullYear();
+  const thisMonth1=`${currentYear}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
+  const jan1Str=`${currentYear}-01-01`;
+  const prevMonSnap=sorted.find(s=>s.date<thisMonth1);
+  const jan1Snap=sorted.find(s=>s.date<jan1Str);
+  function snapTotal(s){ return getCashTotal(s)+(s.twStock||0)+(s.usStock||0)+(s.gold||0); }
+  let growthHtml='';
+  if(prevMonSnap){
+    const pt=snapTotal(prevMonSnap);
+    const diff=currentTotal-pt;
+    const pct=pt>0?diff/pt*100:null;
+    const col=diff>=0?'var(--profit)':'var(--loss)';
+    growthHtml+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--hover-bg);border-radius:6px;font-size:11px;">
+      <span style="color:var(--muted);">較上個月（${prevMonSnap.date}）</span>
+      <span style="font-weight:700;color:${col};">${diff>=0?'+':''}$${fmt(diff)}${pct!==null?' ('+(pct>=0?'+':'')+pct.toFixed(1)+'%)':''}</span>
+    </div>`;
+  }
+  if(jan1Snap){
+    const jt=snapTotal(jan1Snap);
+    const diff=currentTotal-jt;
+    const pct=jt>0?diff/jt*100:null;
+    const col=diff>=0?'var(--profit)':'var(--loss)';
+    growthHtml+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;background:var(--hover-bg);border-radius:6px;font-size:11px;margin-top:4px;">
+      <span style="color:var(--muted);">今年 1/1 以來（${jan1Snap.date}）</span>
+      <span style="font-weight:700;color:${col};">${diff>=0?'+':''}$${fmt(diff)}${pct!==null?' ('+(pct>=0?'+':'')+pct.toFixed(1)+'%)':''}</span>
+    </div>`;
+  }
   document.getElementById('nwAllocTotal').innerHTML=tot4pct?`
     <div style="height:1px;background:var(--border);margin:8px 0;"></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
       <span style="font-size:11px;color:var(--muted);">總計</span>
       <span style="font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;">$${fmt(currentTotal)}</span>
-    </div>`:'';
+    </div>${growthHtml}`:'';
 
-  // ── Card 2: 總資產 ──
-  const prevTotal=prev?(getCashTotal(prev)+(prev.twStock||0)+(prev.usStock||0)+(prev.gold||0)):null;
-  const momChange=prevTotal!==null?currentTotal-prevTotal:null;
-  const momPct=prevTotal?momChange/prevTotal*100:null;
-  const jan1Snap=sorted.filter(s=>s.date<'2026-01-01').sort((a,b)=>b.date.localeCompare(a.date))[0];
-  let ytdObj=null;
-  if(jan1Snap){
-    const j=getCashTotal(jan1Snap)+(jan1Snap.twStock||0)+(jan1Snap.usStock||0)+(jan1Snap.gold||0);
-    ytdObj={change:currentTotal-j,pct:(currentTotal-j)/j*100};
-  }
+  // ── Card 2: 複利試算 ──
+  const principal=cwPrincipal!==null?cwPrincipal:Math.round(currentTotal);
+  const lastYearIdx=cwYears.length-1;
+  const lastRateIdx=cwRates.length-1;
+  // header row: [空白] + 各年數 input + × + +
+  let headerCells=`<th style="font-size:11px;color:var(--muted);padding:4px 6px;background:var(--hover-bg);text-align:left;white-space:nowrap;">年\\率</th>`;
+  cwYears.forEach((y,yi)=>{
+    headerCells+=`<th style="padding:3px 2px;background:var(--hover-bg);">
+      <div style="display:flex;align-items:center;gap:2px;justify-content:center;">
+        <input type="number" value="${y}" min="1" step="1"
+          style="width:38px;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:center;background:var(--bg);color:var(--text);"
+          onchange="cwYears[${yi}]=parseFloat(this.value)||${y};renderNetWorthCards()">
+        <span style="font-size:10px;color:var(--muted);">年</span>
+        <button onclick="cwYears.splice(${yi},1);renderNetWorthCards()" title="刪除"
+          style="border:none;background:none;color:var(--profit);cursor:pointer;font-size:12px;line-height:1;padding:0 1px;">×</button>
+      </div>
+    </th>`;
+  });
+  headerCells+=`<th style="padding:3px 2px;background:var(--hover-bg);">
+    <button onclick="cwYears.push(cwYears.length?cwYears[cwYears.length-1]+5:5);renderNetWorthCards()"
+      style="border:1px dashed var(--border);background:transparent;color:var(--muted);cursor:pointer;border-radius:4px;font-size:11px;padding:2px 5px;">+</button>
+  </th>`;
+  // body rows: each rate
+  let bodyRows='';
+  cwRates.forEach((r,ri)=>{
+    let cells=`<td style="padding:3px 2px;">
+      <div style="display:flex;align-items:center;gap:2px;">
+        <input type="number" value="${r}" min="0" step="0.5"
+          style="width:36px;font-size:11px;padding:2px 3px;border:1px solid var(--border);border-radius:4px;text-align:center;background:var(--bg);color:var(--text);"
+          onchange="cwRates[${ri}]=parseFloat(this.value)||${r};renderNetWorthCards()">
+        <span style="font-size:10px;color:var(--muted);">%</span>
+        <button onclick="cwRates.splice(${ri},1);renderNetWorthCards()" title="刪除"
+          style="border:none;background:none;color:var(--profit);cursor:pointer;font-size:12px;line-height:1;padding:0 1px;">×</button>
+      </div>
+    </td>`;
+    cwYears.forEach(y=>{
+      const val=principal*Math.pow(1+r/100,y);
+      cells+=`<td style="font-size:11px;font-weight:600;text-align:center;padding:3px 4px;font-variant-numeric:tabular-nums;">${fmtWan(val)}</td>`;
+    });
+    cells+=`<td></td>`;
+    bodyRows+=`<tr>${cells}</tr>`;
+  });
+  // add-rate row
+  bodyRows+=`<tr><td colspan="${cwYears.length+2}" style="padding:3px 4px;">
+    <button onclick="cwRates.push(cwRates.length?cwRates[cwRates.length-1]+2:4);renderNetWorthCards()"
+      style="border:1px dashed var(--border);background:transparent;color:var(--muted);cursor:pointer;border-radius:4px;font-size:11px;padding:2px 8px;width:100%;">+ 新增報酬率</button>
+  </td></tr>`;
   document.getElementById('nwTotal').innerHTML=`
-    <div style="padding:12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">目前總資產</div>
-      <div style="font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;">$${fmt(currentTotal)}</div>
-      <div style="font-size:10px;color:var(--subtle);margin-top:3px;">${latest?'現金記錄：'+latest.date:'尚無現金記錄，請點擊「記錄現金」'}</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+      <span style="font-size:11px;color:var(--muted);">起始資產</span>
+      <input type="number" value="${principal}"
+        style="width:110px;font-size:12px;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);"
+        oninput="cwPrincipal=parseFloat(this.value)||null;renderNetWorthCards()">
+      <button onclick="cwPrincipal=null;renderNetWorthCards()"
+        style="font-size:11px;color:var(--muted);border:1px solid var(--border);border-radius:4px;background:var(--hover-bg);cursor:pointer;padding:2px 6px;">重置</button>
     </div>
-    ${momChange!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">較上筆記錄（${prev.date}）</div>
-      <div style="font-size:18px;font-weight:700;color:${momChange>=0?'var(--profit)':'var(--loss)'};font-variant-numeric:tabular-nums;">${momChange>=0?'+':''}$${fmt(momChange)}</div>
-      <div style="font-size:11px;color:${momChange>=0?'var(--profit)':'var(--loss)'};">${momPct>=0?'+':''}${momPct.toFixed(2)}%</div>
-    </div>`:''}
-    ${ytdObj?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">YTD 總資產成長</div>
-      <div style="font-size:18px;font-weight:700;color:${ytdObj.change>=0?'var(--profit)':'var(--loss)'};font-variant-numeric:tabular-nums;">${ytdObj.change>=0?'+':''}$${fmt(ytdObj.change)}</div>
-      <div style="font-size:11px;color:${ytdObj.change>=0?'var(--profit)':'var(--loss)'};">${ytdObj.pct>=0?'+':''}${ytdObj.pct.toFixed(2)}%</div>
-    </div>`:''}`;
+    <div style="overflow:auto;flex:1;">
+      <table style="border-collapse:collapse;width:100%;">
+        <thead><tr>${headerCells}</tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table>
+    </div>`;
 
-  // ── Card 3: 財富目標 ──
-  const goal=wealthGoal;
-  const progress=goal>0?Math.min(currentTotal/goal*100,100):0;
-  let estMonths=null;
-  if(goal>currentTotal&&sorted.length>=2){
-    const recent=sorted.slice(0,Math.min(sorted.length,6));
-    const first=recent[recent.length-1], last=recent[0];
-    const firstT=getCashTotal(first)+(first.twStock||0)+(first.usStock||0)+(first.gold||0);
-    const lastT =getCashTotal(last)+(last.twStock||0)+(last.usStock||0)+(last.gold||0);
-    const mo=monthsBetween(first.date,last.date);
-    if(mo>0&&lastT>firstT){const mg=(lastT-firstT)/mo;if(mg>0)estMonths=Math.ceil((goal-currentTotal)/mg);}
-  }
-  document.getElementById('nwGoal').innerHTML=`
-    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">目標總資產（元）</div>
-      <input type="number" id="wealthGoalInput" value="${goal||''}" placeholder="輸入目標金額…"
-        style="width:100%;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
-        oninput="wealthGoal=parseFloat(this.value)||0;localStorage.setItem('wealth_goal_v1',String(wealthGoal));renderNetWorthCards()">
-    </div>
-    ${goal>0?`
-    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:6px;">
-        <span style="color:var(--muted);">$${fmt(currentTotal)} / $${fmt(goal)}</span>
+  // ── Card 3: 財富目標（多個） ──
+  let goalsHtml='';
+  wealthGoals.forEach((goal,i)=>{
+    const amt=goal.amount||0;
+    const progress=amt>0?Math.min(currentTotal/amt*100,100):0;
+    let estMonths=null;
+    if(amt>currentTotal&&sorted.length>=2){
+      const recent=sorted.slice(0,Math.min(sorted.length,6));
+      const first=recent[recent.length-1],last2=recent[0];
+      const firstT=snapTotal(first);
+      const lastT=snapTotal(last2);
+      const mo=monthsBetween(first.date,last2.date);
+      if(mo>0&&lastT>firstT){const mg=(lastT-firstT)/mo;if(mg>0)estMonths=Math.ceil((amt-currentTotal)/mg);}
+    }
+    goalsHtml+=`<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <input type="text" value="${escHtml(goal.name)}" placeholder="目標名稱"
+          style="flex:1;font-size:12px;font-weight:600;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);"
+          onchange="wealthGoals[${i}].name=this.value;saveWealthGoals()">
+        <button onclick="wealthGoals.splice(${i},1);saveWealthGoals();renderNetWorthCards()"
+          style="border:none;background:none;color:var(--profit);cursor:pointer;font-size:14px;padding:2px 4px;" title="刪除">×</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:4px;margin-bottom:6px;">
+        <span style="font-size:11px;color:var(--muted);">目標金額</span>
+        <input type="number" value="${amt||''}" placeholder="輸入金額…"
+          style="flex:1;font-size:12px;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);-moz-appearance:textfield;"
+          onchange="wealthGoals[${i}].amount=parseFloat(this.value)||0;saveWealthGoals();renderNetWorthCards()">
+      </div>
+      ${amt>0?`
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px;">
+        <span style="color:var(--muted);">$${fmt(currentTotal)} / $${fmt(amt)}</span>
         <span style="font-weight:700;">${progress.toFixed(1)}%</span>
       </div>
-      <div style="background:var(--border);border-radius:999px;height:10px;overflow:hidden;">
+      <div style="background:var(--border);border-radius:999px;height:8px;overflow:hidden;margin-bottom:4px;">
         <div style="height:100%;border-radius:999px;background:${progress>=100?'#16a34a':'#3b82f6'};width:${progress.toFixed(1)}%;transition:width .4s;"></div>
       </div>
-    </div>
-    ${estMonths!==null?`<div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">依近期成長率預估</div>
-      <div style="font-size:20px;font-weight:700;">約 <span style="color:#3b82f6;">${estMonths}</span> 個月</div>
-      <div style="font-size:10px;color:var(--subtle);">預計 ${addMonthsLabel(estMonths)}</div>
-    </div>`:''}
-    `:'<div style="font-size:12px;color:var(--subtle);padding:4px 0;">輸入目標金額後顯示進度與預估達標時間</div>'}`;
+      ${estMonths!==null?`<div style="font-size:11px;color:var(--muted);">約 <span style="font-weight:700;color:#3b82f6;">${estMonths}</span> 個月 · 預計 ${addMonthsLabel(estMonths)}</div>`:''}
+      `:'<div style="font-size:11px;color:var(--subtle);">填入目標金額後顯示進度</div>'}
+    </div>`;
+  });
+  goalsHtml+=`<button onclick="wealthGoals.push({id:uid(),name:'目標 '+(wealthGoals.length+1),amount:0});saveWealthGoals();renderNetWorthCards()"
+    style="width:100%;border:1px dashed var(--border);background:transparent;color:var(--muted);border-radius:6px;padding:7px;cursor:pointer;font-size:12px;transition:.15s;">+ 新增目標</button>`;
+  document.getElementById('nwGoal').innerHTML=goalsHtml||'<div style="font-size:12px;color:var(--subtle);">尚無目標</div>';
 
   // ── Card 4: 現金分析 ──
   const efund=emergencyFund;
