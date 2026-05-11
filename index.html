@@ -552,8 +552,9 @@ function isGoldPos(p) { return p.market==='gold'||p.type==='黃金'; }
 function isTWPos(p)   { return !isUSPos(p)&&!isGoldPos(p); }
 let cashSnapshots = [];   // [{id, date, cash, twStock, usStock, gold, note}]
 let wealthGoals   = [];   // [{id, name, amount}]
-let emergencyFund = 600000;
-let userAge       = null;   // 使用者目前年齡（用於財富目標達成時幾歲）
+let emergencyFund  = 600000;
+let monthlyExpense = 0;     // 每月固定支出（用於計算可投資現金）
+let userAge        = null;   // 使用者目前年齡（用於財富目標達成時幾歲）
 let cwPrincipal  = null;   // null = 自動用 currentTotal
 let cwMaxYears   = 30;
 let cwCategories = null;   // [{name,pct,rate}] — initialized in loadState
@@ -591,6 +592,7 @@ function loadState() {
     if(wg){ wealthGoals=JSON.parse(wg); }
     else { const old=parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0; if(old>0) wealthGoals=[{id:uid(),name:'財富目標',amount:old}]; }
     emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
+    monthlyExpense=parseFloat(localStorage.getItem('monthly_expense_v1')||'0')||0;
     const ua=localStorage.getItem('user_age_v1'); if(ua) userAge=parseFloat(ua)||null;
     try{ const cwc=localStorage.getItem('cw_categories_v1'); if(cwc) cwCategories=JSON.parse(cwc); }catch(e){}
   } catch(e){}
@@ -683,22 +685,49 @@ function getTypePref(name) {
 async function fetchOnePrice(code, market) {
   if (market === 'us') {
     const d = await fetchYahooPrice(code);
-    return d ? d.price : null; // returns USD price; calc() will convert to TWD
+    return d ? d.price : null;
   }
   if (market === 'gold') {
     return await fetchGoldPriceTWD();
   }
-  const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${market||'tse'}_${code}.tw&json=1&delay=0`;
-  for (const u of [url, `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`]) {
-    try {
-      const res = await fetch(u, {cache:'no-store'}); if (!res.ok) continue;
-      const d = await res.json();
-      if (d.msgArray?.[0]) {
-        const p = parseFloat(d.msgArray[0].z !== '-' ? d.msgArray[0].z : d.msgArray[0].y);
-        if (!isNaN(p) && p > 0) return p;
-      }
-    } catch(e) { /* try next */ }
+  // ── 台股：Yahoo Finance .TW/.TWO 優先（直接呼叫，不走 sessionStorage cache）──
+  const yfsuffix = market==='otc' ? '.TWO' : '.TW';
+  const yticker  = code + yfsuffix;
+  const yfBases  = [
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${yticker}`,
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yticker}`,
+    `https://query2.finance.yahoo.com/v8/finance/chart/${yticker}?range=2d&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${yticker}?range=2d&interval=1d`,
+  ];
+  for(const base of yfBases){
+    for(const u of [base, `https://corsproxy.io/?${encodeURIComponent(base)}`, `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`]){
+      try{
+        const d=await fetchJSON(u); if(!d) continue;
+        const q=d?.quoteResponse?.result?.[0];
+        if(q?.regularMarketPrice>0) return q.regularMarketPrice;
+        const meta=d?.chart?.result?.[0]?.meta;
+        if(meta?.regularMarketPrice>0) return meta.regularMarketPrice;
+      }catch(e){}
+    }
   }
+  // ── 備用：TWSE/TPEX 即時報價 API ──
+  const misUrl=`https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${market||'tse'}_${code}.tw&json=1&delay=0`;
+  for(const u of [misUrl, `https://api.allorigins.win/raw?url=${encodeURIComponent(misUrl)}`]){
+    try{
+      const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
+      const d=await res.json();
+      if(d.msgArray?.[0]){
+        const p=parseFloat(d.msgArray[0].z!=='-'?d.msgArray[0].z:d.msgArray[0].y);
+        if(!isNaN(p)&&p>0) return p;
+      }
+    }catch(e){}
+  }
+  // ── 最終備用：TWSE STOCK_DAY 最新收盤價 ──
+  const now=new Date();
+  const rows=market==='otc'
+    ?await fetchTPEXMonthly(code,now.getFullYear(),now.getMonth()+1)
+    :await fetchTWSEMonthly(code,now.getFullYear(),now.getMonth()+1);
+  if(rows&&rows.length) return rows[rows.length-1].close;
   return null;
 }
 
@@ -2442,14 +2471,24 @@ function renderNetWorthCards(){
 
   // ── Card 4: 現金分析 ──
   const efund=emergencyFund;
-  const investable=Math.max(0,cashNow-efund);
+  const mexp=monthlyExpense||0;
+  const reserve=efund+mexp*6;                          // 緊急備用金 + 6個月固定支出
+  const investable=Math.max(0,cashNow-reserve);
   const investRatio=currentTotal>0?((twValue+usValue+goldValue)/currentTotal*100):0;
   document.getElementById('nwCash').innerHTML=`
-    <div style="padding:10px 12px;background:var(--hover-bg);border-radius:8px;margin-bottom:8px;">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">緊急備用金目標（元）</div>
-      <input type="number" id="efundInput" value="${efund||''}" placeholder="設定金額…"
-        style="width:100%;font-size:13px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
-        oninput="emergencyFund=parseFloat(this.value)||0;localStorage.setItem('emergency_fund_v1',String(emergencyFund));renderNetWorthCards()">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
+      <div style="padding:8px 10px;background:var(--hover-bg);border-radius:8px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">緊急備用金目標</div>
+        <input type="number" id="efundInput" value="${efund||''}" placeholder="設定金額…"
+          style="width:100%;font-size:12px;border:1px solid var(--border);border-radius:5px;padding:4px 7px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;box-sizing:border-box;"
+          oninput="emergencyFund=parseFloat(this.value)||0;localStorage.setItem('emergency_fund_v1',String(emergencyFund));renderNetWorthCards()">
+      </div>
+      <div style="padding:8px 10px;background:var(--hover-bg);border-radius:8px;">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">每月固定支出</div>
+        <input type="number" id="mexpInput" value="${mexp||''}" placeholder="設定金額…"
+          style="width:100%;font-size:12px;border:1px solid var(--border);border-radius:5px;padding:4px 7px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;box-sizing:border-box;"
+          oninput="monthlyExpense=parseFloat(this.value)||0;localStorage.setItem('monthly_expense_v1',String(monthlyExpense));renderNetWorthCards()">
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;">
       ${smallStat('現金佔比',fmtD(currentTotal>0?cashNow/currentTotal*100:0)+'%')}
@@ -2457,10 +2496,11 @@ function renderNetWorthCards(){
       ${smallStat('現金餘額','$'+fmt(cashNow))}
       ${smallStat('可投資現金','<span style="color:'+(investable>0?'var(--profit)':'var(--muted)')+';">$'+fmt(investable)+'</span>')}
     </div>
+    ${mexp>0?`<div style="font-size:10px;color:var(--muted);margin-bottom:6px;padding:0 2px;">保留金 = 備用金 $${fmt(efund)} + 月支出×6 $${fmt(mexp*6)} = $${fmt(reserve)}</div>`:''}
     ${investable>0
-      ?`<div style="padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:11px;color:#1d4ed8;">💡 超出備用金 <strong>$${fmt(investable)}</strong>，可考慮持續買進</div>`
-      :cashNow<efund&&efund>0
-        ?`<div style="padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#b45309;">⚠️ 現金低於備用金目標，建議先補足現金緩衝</div>`
+      ?`<div style="padding:8px 10px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;font-size:11px;color:#1d4ed8;">💡 超出保留金 <strong>$${fmt(investable)}</strong>，可考慮持續買進</div>`
+      :cashNow<reserve&&reserve>0
+        ?`<div style="padding:8px 10px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;font-size:11px;color:#b45309;">⚠️ 現金低於保留金目標（$${fmt(reserve)}），建議先補足</div>`
         :''}`;
 }
 
