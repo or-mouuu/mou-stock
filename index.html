@@ -377,7 +377,7 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
         <div>
           <label class="field-label">股票代號</label>
-          <input type="text" id="fCode" placeholder="2330" style="width:100%;" oninput="autoFillName()">
+          <input type="text" id="fCode" placeholder="2330 / AAPL" style="width:100%;" oninput="autoFillName()" onblur="lookupUSStockName()">
         </div>
         <div>
           <label class="field-label">股票名稱 *</label>
@@ -682,7 +682,7 @@ function getTypePref(name) {
 // ════════════════════════════════════════════════
 // PRICE FETCHING
 // ════════════════════════════════════════════════
-async function fetchOnePrice(code, market) {
+async function fetchOnePrice(code, market, bypassCache=false) {
   if (market === 'us') {
     const d = await fetchYahooPrice(code);
     return d ? d.price : null;
@@ -690,44 +690,23 @@ async function fetchOnePrice(code, market) {
   if (market === 'gold') {
     return await fetchGoldPriceTWD();
   }
-  // ── 台股：Yahoo Finance .TW/.TWO 優先（直接呼叫，不走 sessionStorage cache）──
-  const yfsuffix = market==='otc' ? '.TWO' : '.TW';
-  const yticker  = code + yfsuffix;
-  const yfBases  = [
-    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${yticker}`,
-    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yticker}`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${yticker}?range=2d&interval=1d`,
-    `https://query1.finance.yahoo.com/v8/finance/chart/${yticker}?range=2d&interval=1d`,
-  ];
-  for(const base of yfBases){
-    for(const u of [base, `https://corsproxy.io/?${encodeURIComponent(base)}`, `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`]){
-      try{
-        const d=await fetchJSON(u); if(!d) continue;
-        const q=d?.quoteResponse?.result?.[0];
-        if(q?.regularMarketPrice>0) return q.regularMarketPrice;
-        const meta=d?.chart?.result?.[0]?.meta;
-        if(meta?.regularMarketPrice>0) return meta.regularMarketPrice;
-      }catch(e){}
-    }
-  }
-  // ── 備用：TWSE/TPEX 即時報價 API ──
-  const misUrl=`https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${market||'tse'}_${code}.tw&json=1&delay=0`;
-  for(const u of [misUrl, `https://api.allorigins.win/raw?url=${encodeURIComponent(misUrl)}`]){
-    try{
-      const res=await fetch(u,{cache:'no-store'}); if(!res.ok) continue;
-      const d=await res.json();
-      if(d.msgArray?.[0]){
-        const p=parseFloat(d.msgArray[0].z!=='-'?d.msgArray[0].z:d.msgArray[0].y);
-        if(!isNaN(p)&&p>0) return p;
-      }
-    }catch(e){}
-  }
-  // ── 最終備用：TWSE STOCK_DAY 最新收盤價 ──
+  // ── 台股：TWSE/TPEX STOCK_DAY 最新收盤（快速可靠）──
   const now=new Date();
+  const yr=now.getFullYear(), mo=now.getMonth()+1;
+  if(bypassCache){
+    sessionStorage.removeItem(`twse_mo_${code}_${yr}_${mo}`);
+    sessionStorage.removeItem(`tpex_mo_${code}_${yr}_${mo}`);
+    // 同時清 YTD 全日線 cache，讓圖表也能拿到最新資料
+    sessionStorage.removeItem(`twytd_${code}_${todayStr()}`);
+  }
   const rows=market==='otc'
-    ?await fetchTPEXMonthly(code,now.getFullYear(),now.getMonth()+1)
-    :await fetchTWSEMonthly(code,now.getFullYear(),now.getMonth()+1);
+    ?await fetchTPEXMonthly(code,yr,mo)
+    :await fetchTWSEMonthly(code,yr,mo);
   if(rows&&rows.length) return rows[rows.length-1].close;
+  // ── 備用：Yahoo Finance .TW/.TWO ──
+  const suffix=market==='otc'?'.TWO':'.TW';
+  const yf=await fetchYahooPrice(code+suffix);
+  if(yf?.price>0) return yf.price;
   return null;
 }
 
@@ -740,7 +719,7 @@ async function refreshPrices() {
   const unique = {};
   positions.forEach(p => { if (p.stockCode) unique[p.stockCode] = p.market||'tse'; });
   await Promise.all(Object.entries(unique).map(async ([code, mkt]) => {
-    const price = await fetchOnePrice(code, mkt);
+    const price = await fetchOnePrice(code, mkt, true);
     if (price !== null) prices[code] = { price, updatedAt: new Date().toISOString() };
   }));
   saveState(); render(); setLastUpdated();
@@ -1243,6 +1222,36 @@ function autoFillName() {
     }
   }
 }
+async function lookupUSStockName(){
+  const mkt=document.getElementById('fMarket').value;
+  if(mkt!=='us') return;
+  const code=document.getElementById('fCode').value.trim().toUpperCase();
+  if(!code) return;
+  const nameEl=document.getElementById('fName');
+  if(nameEl.value) return; // 已有名稱就不覆蓋
+  nameEl.placeholder='查詢中…';
+  const bases=[
+    `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${code}`,
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${code}`,
+  ];
+  for(const base of bases){
+    for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`]){
+      try{
+        const d=await fetchJSON(u); if(!d) continue;
+        const q=d?.quoteResponse?.result?.[0];
+        if(q?.shortName||q?.longName){
+          nameEl.value=q.shortName||q.longName;
+          // 若現價欄位空白，順便帶入即時價
+          const priceEl=document.getElementById('fPrice');
+          if(!priceEl.value&&q.regularMarketPrice>0) priceEl.value=q.regularMarketPrice;
+          nameEl.placeholder='股票名稱 *';
+          return;
+        }
+      }catch(e){}
+    }
+  }
+  nameEl.placeholder='股票名稱 *';
+}
 function onTypeChange(){
   const type=document.getElementById('fType').value;
   if(type==='黃金'){
@@ -1263,6 +1272,8 @@ function onMarketChange(){
     costHint.textContent=`目前匯率：${usdTwdRate?fmtD(usdTwdRate)+' TWD/USD':'載入中…'}`;
     costHint.style.display='block';
     codeInput.placeholder='NVDA';
+    // 若已輸入代號但尚無名稱，自動查詢
+    if(codeInput.value.trim()) lookupUSStockName();
   } else if(mkt==='gold'){
     document.getElementById('fType').value='黃金';
     currency.value='TWD';
@@ -2481,13 +2492,13 @@ function renderNetWorthCards(){
         <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">緊急備用金目標</div>
         <input type="number" id="efundInput" value="${efund||''}" placeholder="設定金額…"
           style="width:100%;font-size:12px;border:1px solid var(--border);border-radius:5px;padding:4px 7px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;box-sizing:border-box;"
-          oninput="emergencyFund=parseFloat(this.value)||0;localStorage.setItem('emergency_fund_v1',String(emergencyFund));renderNetWorthCards()">
+          onchange="emergencyFund=parseFloat(this.value)||0;localStorage.setItem('emergency_fund_v1',String(emergencyFund));renderNetWorthCards()">
       </div>
       <div style="padding:8px 10px;background:var(--hover-bg);border-radius:8px;">
         <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">每月固定支出</div>
         <input type="number" id="mexpInput" value="${mexp||''}" placeholder="設定金額…"
           style="width:100%;font-size:12px;border:1px solid var(--border);border-radius:5px;padding:4px 7px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;box-sizing:border-box;"
-          oninput="monthlyExpense=parseFloat(this.value)||0;localStorage.setItem('monthly_expense_v1',String(monthlyExpense));renderNetWorthCards()">
+          onchange="monthlyExpense=parseFloat(this.value)||0;localStorage.setItem('monthly_expense_v1',String(monthlyExpense));renderNetWorthCards()">
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;">
@@ -2773,6 +2784,19 @@ function deleteCashRecord(id){
 // ════════════════════════════════════════════════
 // INIT
 // ════════════════════════════════════════════════
+// 背景預先暖機 YTD cache（讓切換到台股/美股時幾乎即時顯示）
+async function prefetchYTDCache(){
+  try{
+    // TAIEX 日線
+    await fetchTAIEXYTD();
+    // 各台股持倉日線
+    const twPos=positions.filter(p=>isTWPos(p));
+    await Promise.all(twPos.map(p=>fetchTWStockYTD(p.stockCode,p.market||'tse')));
+    // 美股基準 VTI
+    await fetchYTDHistory('VTI');
+  }catch(e){}
+}
+
 window.onload=()=>{
   loadState();
   const savedRPnl=localStorage.getItem('realized_pnl_v1');
@@ -2783,6 +2807,8 @@ window.onload=()=>{
   render();
   setLastUpdated();
   renderNetWorthView();
+  // 延遲 3 秒後在背景暖機 YTD cache，不阻塞初始渲染
+  setTimeout(prefetchYTDCache, 3000);
 };
 </script>
 
