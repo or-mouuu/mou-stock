@@ -403,11 +403,11 @@
         </div>
         <div>
           <label class="field-label">股數 *</label>
-          <input type="number" id="fShares" placeholder="1000" min="1" style="width:100%;">
+          <input type="number" id="fShares" placeholder="1000" min="1" style="width:100%;" oninput="updateDeductAmt()">
         </div>
         <div>
           <label id="fCostLabel" class="field-label">成本均價（每股）*</label>
-          <input type="number" id="fCost" placeholder="500.00" step="0.01" style="width:100%;">
+          <input type="number" id="fCost" placeholder="500.00" step="0.01" style="width:100%;" oninput="updateDeductAmt()">
           <div id="fCostHint" style="font-size:10px;color:var(--muted);margin-top:2px;display:none;"></div>
         </div>
         <input type="hidden" id="fCurrency" value="TWD">
@@ -420,7 +420,18 @@
           <input type="text" id="fNotes" placeholder="選填" style="width:100%;">
         </div>
       </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px;">
+      <!-- 買入扣除現金（新增時顯示） -->
+      <div id="fDeductSection" style="display:none;margin-top:12px;padding:11px 13px;background:var(--hover-bg);border-radius:8px;border:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:7px;">買入後自動扣除現金（選填）</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <select id="fDeductAcct" style="flex:1;font-size:12px;padding:4px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);" onchange="updateDeductAmt()">
+            <option value="">不扣除</option>
+          </select>
+          <span id="fDeductAmt" style="font-size:13px;font-weight:700;color:var(--loss);white-space:nowrap;min-width:90px;text-align:right;"></span>
+        </div>
+        <div id="fDeductBalance" style="font-size:10px;color:var(--subtle);margin-top:4px;"></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
         <button class="btn btn-outline" onclick="hideAddModal()">取消</button>
         <button class="btn btn-primary" onclick="savePosition()">儲存</button>
       </div>
@@ -1314,6 +1325,33 @@ function onMarketChange(){
   }
 }
 
+function getLatestAcctBalance(acctId){
+  const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+  for(const snap of sorted){
+    if(snap.accounts?.[acctId]!==undefined) return parseFloat(snap.accounts[acctId])||0;
+  }
+  return 0;
+}
+function updateDeductAmt(){
+  const shares=parseInt(document.getElementById('fShares')?.value)||0;
+  const cost=parseFloat(document.getElementById('fCost')?.value)||0;
+  const market=document.getElementById('fMarket')?.value||'tse';
+  const acctId=document.getElementById('fDeductAcct')?.value||'';
+  const rate=usdTwdRate||32;
+  const totalTWD=Math.round(market==='us'?shares*cost*rate:shares*cost);
+  const amtEl=document.getElementById('fDeductAmt');
+  const balEl=document.getElementById('fDeductBalance');
+  if(amtEl) amtEl.textContent=totalTWD>0?`-$${fmt(totalTWD)}`:'';
+  if(balEl){
+    if(acctId&&totalTWD>0){
+      const cur=getLatestAcctBalance(acctId);
+      const after=cur-totalTWD;
+      balEl.textContent=`目前餘額 $${fmt(cur)} → 扣除後 $${fmt(after)}`;
+      balEl.style.color=after<0?'var(--loss)':'var(--subtle)';
+    } else { balEl.textContent=''; }
+  }
+}
+
 function showAddModal() {
   editingId=null;
   document.getElementById('addModalTitle').textContent='新增部位';
@@ -1322,6 +1360,18 @@ function showAddModal() {
   // 依照目前市場自動預設「市場」欄位
   const defaultMkt=currentMarket==='us'?'us':currentMarket==='tw'?'tse':'tse';
   document.getElementById('fMarket').value=defaultMkt;
+  // 買入扣除現金區塊
+  const deductSec=document.getElementById('fDeductSection');
+  const deductSel=document.getElementById('fDeductAcct');
+  if(deductSec&&deductSel){
+    if(bankAccounts.length>0){
+      deductSec.style.display='block';
+      deductSel.innerHTML=`<option value="">不扣除</option>`+
+        bankAccounts.map(a=>`<option value="${escHtml(a.id)}">${escHtml(a.name)}</option>`).join('');
+    } else { deductSec.style.display='none'; }
+    document.getElementById('fDeductAmt').textContent='';
+    document.getElementById('fDeductBalance').textContent='';
+  }
   document.getElementById('addModal').style.display='flex';
   onTypeChange();
   onMarketChange(); // 確保 currency / cost label 等隨市場正確初始化
@@ -1355,13 +1405,35 @@ function savePosition() {
   if (!name)            { toast('請填入股票名稱','err'); return; }
   if (isNaN(shares)||shares<=0) { toast('請填入正確的股數','err'); return; }
   if (isNaN(cost)||cost<=0)     { toast('請填入正確的成本均價','err'); return; }
-  if (!isNaN(manualP)&&manualP>0&&code) prices[code]={price:manualP,updatedAt:new Date().toISOString()};
+  if (!isNaN(manualP)&&manualP>0&&code) prices[code]={price:manualP,updatedAt:todayStr()};
   saveTypePref(name,type);
   if (editingId) {
     const idx=positions.findIndex(p=>p.id===editingId);
     if (idx>=0) positions[idx]={...positions[idx],stockCode:code,stockName:name,type,market,shares,avgCost:cost,notes,currency:document.getElementById('fCurrency').value};
   } else {
     positions.push({id:uid(),stockCode:code,stockName:name,market,type,shares,avgCost:cost,notes,currency:document.getElementById('fCurrency').value,transactions:[]});
+    // ── 自動扣除現金 ──
+    const deductAcctId=document.getElementById('fDeductAcct')?.value||'';
+    if(deductAcctId){
+      const rate2=usdTwdRate||32;
+      const deductAmt=Math.round(market==='us'?shares*cost*rate2:shares*cost);
+      if(deductAmt>0){
+        const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+        const latestSnap=sorted[0];
+        const newAccts=latestSnap?.accounts?{...latestSnap.accounts}:{};
+        bankAccounts.forEach(a=>{ if(newAccts[a.id]===undefined) newAccts[a.id]=0; });
+        const curBal=parseFloat(newAccts[deductAcctId])||0;
+        newAccts[deductAcctId]=curBal-deductAmt;
+        cashSnapshots.push({
+          id:uid(),
+          date:new Date().toISOString().split('T')[0],
+          cash:Object.values(newAccts).reduce((s,v)=>s+(+v||0),0),
+          accounts:newAccts,
+          note:`買入 ${name} ${shares.toLocaleString()}股（自動扣除）`
+        });
+        toast(`已從「${bankAccounts.find(a=>a.id===deductAcctId)?.name}」扣除 $${fmt(deductAmt)}`);
+      }
+    }
   }
   saveState(); hideAddModal(); render();
 }
