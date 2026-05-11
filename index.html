@@ -1647,6 +1647,35 @@ function showTxModal(posId) {
   document.getElementById('txModal').style.display='flex';
 }
 function hideTxModal() { document.getElementById('txModal').style.display='none'; }
+// ── 從交易紀錄重新計算股數和均價 ──
+function recalcFromTransactions(idx){
+  const p=positions[idx];
+  const txs=[...(p.transactions||[])].sort((a,b)=>a.date.localeCompare(b.date));
+  if(!txs.length){
+    // 無交易紀錄時還原初始值
+    if(p.initialShares!==undefined){
+      positions[idx].shares=p.initialShares;
+      positions[idx].avgCost=p.initialAvgCost;
+    }
+    return;
+  }
+  // 從儲存的初始狀態開始疊加
+  let sh=p.initialShares!==undefined?p.initialShares:p.shares;
+  let ac=p.initialAvgCost!==undefined?p.initialAvgCost:p.avgCost;
+  for(const tx of txs){
+    if(tx.action==='buy'){
+      const newSh=sh+tx.shares;
+      ac=newSh>0?(sh*ac+tx.shares*tx.price)/newSh:tx.price;
+      sh=newSh;
+    } else {
+      sh=Math.max(0,sh-tx.shares);
+      // 賣出不改均價
+    }
+  }
+  positions[idx].shares=Math.round(sh*1000)/1000; // 保留小數避免浮點誤差
+  positions[idx].avgCost=ac;
+}
+
 function saveTx() {
   const date  =document.getElementById('txDate').value;
   const action=document.getElementById('txAction').value;
@@ -1659,16 +1688,36 @@ function saveTx() {
 
   const idx=positions.findIndex(p=>p.id===txTargetId);
   if (idx<0) return;
-  if (!positions[idx].transactions) positions[idx].transactions=[];
+  if(!positions[idx].transactions) positions[idx].transactions=[];
+  // 第一次新增交易前，儲存初始狀態作為基準
+  if(positions[idx].transactions.length===0&&positions[idx].initialShares===undefined){
+    positions[idx].initialShares=positions[idx].shares;
+    positions[idx].initialAvgCost=positions[idx].avgCost;
+  }
   positions[idx].transactions.push({id:uid(),date,action,shares,price,note});
+  recalcFromTransactions(idx);
+  // ── 自動調整現金（指定證券帳戶）──
+  const p=positions[idx];
+  const secAcctId=isUSPos(p)?usSecuritiesAcctId:twSecuritiesAcctId;
+  if(secAcctId&&bankAccounts.find(a=>a.id===secAcctId)){
+    const rate2=usdTwdRate||32;
+    const amt=Math.round(shares*price*(isUSPos(p)?rate2:1));
+    const isBuy=action==='buy';
+    _applyCashAdjust(secAcctId,isBuy?-amt:amt,
+      `${isBuy?'買進':'賣出'} ${p.stockName} ${shares.toLocaleString()}股 @ ${fmtD(price)}（交易紀錄）`);
+  }
+  _ytdCache={};  // 持倉異動，清除 YTD cache
   saveState();
   hideTxModal();
-  showDetailModal(txTargetId); // refresh detail modal
+  showDetailModal(txTargetId);
+  renderTable();
   toast('交易記錄已儲存');
 }
 function deleteTx(posId, txId) {
   const idx=positions.findIndex(p=>p.id===posId); if (idx<0) return;
   positions[idx].transactions=(positions[idx].transactions||[]).filter(t=>t.id!==txId);
+  recalcFromTransactions(idx);
+  _ytdCache={};
   saveState();
   showDetailModal(posId);
   renderTable();
