@@ -720,18 +720,34 @@ async function refreshPrices() {
   positions.forEach(p => { if (p.stockCode) unique[p.stockCode] = p.market||'tse'; });
   await Promise.all(Object.entries(unique).map(async ([code, mkt]) => {
     const price = await fetchOnePrice(code, mkt, true);
-    if (price !== null) prices[code] = { price, updatedAt: new Date().toISOString() };
+    if(price!==null){
+      // 取得實際資料日期（TWSE STOCK_DAY 最後一筆的日期）
+      let dataDate=null;
+      if(mkt!=='us'&&mkt!=='gold'){
+        const now2=new Date(),yr2=now2.getFullYear(),mo2=now2.getMonth()+1;
+        const rows2=mkt==='otc'?await fetchTPEXMonthly(code,yr2,mo2):await fetchTWSEMonthly(code,yr2,mo2);
+        if(rows2?.length) dataDate=rows2[rows2.length-1].date;
+      }
+      prices[code]={price,updatedAt:dataDate||todayStr()};
+    }
   }));
   saveState(); render(); setLastUpdated();
   btn.disabled = false; btn.textContent = '更新報價';
 }
 
+function tradingDateLabel(dateStr){
+  // dateStr: "2026-05-09"  → "05/09 (五)"
+  if(!dateStr) return '';
+  const d=new Date(dateStr+'T12:00:00');
+  const days=['日','一','二','三','四','五','六'];
+  return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')} (${days[d.getDay()]})`;
+}
 function setLastUpdated() {
-  const times = Object.values(prices).map(p=>p.updatedAt).filter(Boolean);
-  if (!times.length) return;
-  const last = new Date(Math.max(...times.map(t=>new Date(t))));
-  document.getElementById('lastUpdated').textContent =
-    `報價 ${last.getHours().toString().padStart(2,'0')}:${last.getMinutes().toString().padStart(2,'0')}`;
+  // updatedAt 現在存交易日字串 "YYYY-MM-DD"
+  const dates=Object.values(prices).map(p=>p.updatedAt).filter(Boolean).sort();
+  if(!dates.length) return;
+  const latest=dates[dates.length-1];
+  document.getElementById('lastUpdated').textContent=`收盤 ${tradingDateLabel(latest)}`;
 }
 
 // ════════════════════════════════════════════════
@@ -1757,40 +1773,61 @@ async function fetchTAIEXFromHistory(dateStr){
 }
 
 async function fetchStockDayChange(code,market){
-  if (market === 'us') {
-    const key = `us_daily_${code}_${todayStr()}`;
-    const c = sessionStorage.getItem(key); if (c) return JSON.parse(c);
-    const d = await fetchYahooPrice(code);
-    if (d) { sessionStorage.setItem(key, JSON.stringify(d)); return d; }
+  if(market==='gold'){
+    const price=await fetchGoldPriceTWD();
+    return price?{price,change:null,date:todayStr()}:null;
+  }
+  if(market==='us'){
+    const key=`us_daily2_${code}_${todayStr()}`;
+    const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
+    // Yahoo Finance chart range=5d → 最後2收盤 → 漲跌幅 + 日期
+    const bases=[
+      `https://query2.finance.yahoo.com/v8/finance/chart/${code}?range=5d&interval=1d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${code}?range=5d&interval=1d`,
+    ];
+    for(const base of bases){
+      for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`,`https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`]){
+        try{
+          const d=await fetchJSON(u); if(!d) continue;
+          const res=d?.chart?.result?.[0];
+          const closes=res?.indicators?.quote?.[0]?.close;
+          const ts=res?.timestamp;
+          if(!closes?.length) continue;
+          const valid=closes.map((cl,i)=>({cl,t:ts?.[i]})).filter(x=>x.cl>0);
+          if(valid.length<1) continue;
+          const last=valid[valid.length-1];
+          const prev=valid.length>=2?valid[valid.length-2]:null;
+          const change=prev&&prev.cl>0?(last.cl-prev.cl)/prev.cl*100:null;
+          const date=last.t?new Date(last.t*1000).toISOString().slice(0,10):null;
+          const r={price:last.cl,change,date};
+          sessionStorage.setItem(key,JSON.stringify(r)); return r;
+        }catch(e){}
+      }
+    }
     return null;
   }
-  if (market === 'gold') {
-    const price = await fetchGoldPriceTWD();
-    return price ? { price, change: null } : null;
-  }
-  const cacheKey=`daily_${code}_${todayStr()}`;
+  // ── 台股 TSE/OTC：TWSE STOCK_DAY 月度資料最後2筆 ──
+  const cacheKey=`daily2_${code}_${todayStr()}`;
   const cached=sessionStorage.getItem(cacheKey);
   if(cached) return JSON.parse(cached);
-  let result=null;
-  if(market==='otc'){
-    const rocDate=toRocDate(todayStr());
-    const url=`https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${rocDate}&stkno=${code}`;
-    const d=await fetchWithProxy(url);
-    if(d?.aaData?.length){
-      const last=d.aaData[d.aaData.length-1];
-      const close=parseFloat((last[6]||'').replace(/,/g,''));
-      if(!isNaN(close)&&close>0) result={price:close,change:parseChangePct(last[7],close)};
-    }
-  } else {
-    const url=`https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${todayStr()}&stockNo=${code}`;
-    const d=await fetchWithProxy(url);
-    if(d?.stat==='OK'&&d.data?.length){
-      const last=d.data[d.data.length-1];
-      const close=parseFloat((last[6]||'').replace(/,/g,''));
-      if(!isNaN(close)&&close>0) result={price:close,change:parseChangePct(last[7],close)};
-    }
+  const now=new Date(), yr=now.getFullYear(), mo=now.getMonth()+1;
+  let rows=market==='otc'
+    ?await fetchTPEXMonthly(code,yr,mo)
+    :await fetchTWSEMonthly(code,yr,mo);
+  // 若當月資料不足2筆，補上個月
+  if(rows.length<2){
+    const pmo=mo===1?12:mo-1, pyr=mo===1?yr-1:yr;
+    const prev=market==='otc'
+      ?await fetchTPEXMonthly(code,pyr,pmo)
+      :await fetchTWSEMonthly(code,pyr,pmo);
+    rows=[...prev,...rows];
   }
-  if(result) sessionStorage.setItem(cacheKey,JSON.stringify(result));
+  if(!rows.length) return null;
+  const last=rows[rows.length-1];
+  const prev=rows.length>=2?rows[rows.length-2]:null;
+  const change=prev&&prev.close>0?(last.close-prev.close)/prev.close*100:null;
+  const result={price:last.close,change,date:last.date};
+  sessionStorage.setItem(cacheKey,JSON.stringify(result));
   return result;
 }
 
@@ -1823,16 +1860,18 @@ async function fetchAndRenderDaily(){
     )).then(r=>r.filter(Boolean));
   }
   if(ver!==_dailyVer) return;  // market was switched again while we were fetching
+  // 找最新的資料日期
+  const allDates=stockResults.map(r=>r.date).filter(Boolean).sort();
+  const dataDate=allDates.length?allDates[allDates.length-1]:null;
   stockResults.forEach(r=>{
     dailyChanges[r.code]={change:r.change,price:r.price};
-    if(r.price>0) prices[r.code]={price:r.price,updatedAt:new Date().toISOString()};
+    if(r.price>0) prices[r.code]={price:r.price,updatedAt:r.date||dataDate||todayStr()};
   });
   renderTable();
+  setLastUpdated();
   const stocks=stockResults.sort((a,b)=>Math.abs(b.change||0)-Math.abs(a.change||0));
   const items=indexItem?[indexItem,...stocks]:stocks;
-  const now=new Date();
-  document.getElementById('dailyTime').textContent=
-    `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+  document.getElementById('dailyTime').textContent=dataDate?tradingDateLabel(dataDate):'';
   document.getElementById('dailyList').innerHTML=items.length?items.map((item,i)=>{
     const ch=item.change;
     const sign=ch!=null&&ch>=0?'+':'';
