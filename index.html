@@ -573,6 +573,9 @@ let _cwChart     = null;
 let editingCashId = null;
 let bankAccounts  = [];   // [{id, name}]
 let _tmpBankAccts = [];   // temp copy while editing bank modal
+let twSecuritiesAcctId = '';  // 指定的台股證券帳戶 id
+let usSecuritiesAcctId = '';  // 指定的美股證券帳戶 id
+let _editingOldShares  = 0;   // 編輯部位時記住舊股數
 let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
 let _ytdVer   = 0;
 let _ytdChart = null;  // Chart.js instance for YTD line chart
@@ -605,6 +608,8 @@ function loadState() {
     emergencyFund=parseFloat(localStorage.getItem('emergency_fund_v1')||'600000')||600000;
     monthlyExpense=parseFloat(localStorage.getItem('monthly_expense_v1')||'0')||0;
     const ua=localStorage.getItem('user_age_v1'); if(ua) userAge=parseFloat(ua)||null;
+    twSecuritiesAcctId=localStorage.getItem('tw_securities_acct_v1')||'';
+    usSecuritiesAcctId=localStorage.getItem('us_securities_acct_v1')||'';
     try{ const cwc=localStorage.getItem('cw_categories_v1'); if(cwc) cwCategories=JSON.parse(cwc); }catch(e){}
   } catch(e){}
   if(!cwCategories) cwCategories=[
@@ -1325,6 +1330,41 @@ function onMarketChange(){
   }
 }
 
+function _applyCashAdjust(acctId, delta, note){
+  // delta > 0 = 增加現金；delta < 0 = 扣除現金
+  const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
+  const latestSnap=sorted[0];
+  const newAccts=latestSnap?.accounts?{...latestSnap.accounts}:{};
+  bankAccounts.forEach(a=>{ if(newAccts[a.id]===undefined) newAccts[a.id]=0; });
+  const curBal=parseFloat(newAccts[acctId])||0;
+  newAccts[acctId]=curBal+delta;
+  cashSnapshots.push({
+    id:uid(),
+    date:new Date().toISOString().split('T')[0],
+    cash:Object.values(newAccts).reduce((s,v)=>s+(+v||0),0),
+    accounts:newAccts,
+    note
+  });
+  const acctName=bankAccounts.find(a=>a.id===acctId)?.name||'';
+  toast(`${delta<0?'已從':'已增加'}「${acctName}」${delta<0?'扣除':'增加'} $${fmt(Math.abs(delta))}`);
+}
+function _setupDeductSection(market){
+  const deductSec=document.getElementById('fDeductSection');
+  const deductSel=document.getElementById('fDeductAcct');
+  const titleEl=deductSec?.querySelector('div');
+  if(!deductSec||!deductSel) return;
+  if(!bankAccounts.length){ deductSec.style.display='none'; return; }
+  deductSec.style.display='block';
+  // 指定帳戶
+  const designated=market==='us'?usSecuritiesAcctId:twSecuritiesAcctId;
+  deductSel.innerHTML=`<option value="">不調整</option>`+
+    bankAccounts.map(a=>`<option value="${escHtml(a.id)}"${a.id===designated?' selected':''}>${escHtml(a.name)}</option>`).join('');
+  // 標題依新增/編輯區分
+  if(titleEl) titleEl.textContent=editingId?'加碼/減碼自動調整現金（選填）':'買入後自動扣除現金（選填）';
+  document.getElementById('fDeductAmt').textContent='';
+  document.getElementById('fDeductBalance').textContent='';
+  updateDeductAmt();
+}
 function getLatestAcctBalance(acctId){
   const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
   for(const snap of sorted){
@@ -1338,15 +1378,23 @@ function updateDeductAmt(){
   const market=document.getElementById('fMarket')?.value||'tse';
   const acctId=document.getElementById('fDeductAcct')?.value||'';
   const rate=usdTwdRate||32;
-  const totalTWD=Math.round(market==='us'?shares*cost*rate:shares*cost);
   const amtEl=document.getElementById('fDeductAmt');
   const balEl=document.getElementById('fDeductBalance');
-  if(amtEl) amtEl.textContent=totalTWD>0?`-$${fmt(totalTWD)}`:'';
+  // 編輯模式：計算加碼/減碼差額；新增模式：全額
+  const isEditing=!!editingId;
+  const shareDiff=isEditing?(shares-_editingOldShares):shares;
+  const totalTWD=Math.round(Math.abs(shareDiff)*(market==='us'?cost*rate:cost));
+  const isBuy=shareDiff>=0;
+  if(amtEl){
+    if(totalTWD===0){ amtEl.textContent=isEditing?'（股數未變動）':''; }
+    else{ amtEl.textContent=`${isBuy?'-':'+'}$${fmt(totalTWD)}`; amtEl.style.color=isBuy?'var(--loss)':'var(--profit)'; }
+  }
   if(balEl){
     if(acctId&&totalTWD>0){
       const cur=getLatestAcctBalance(acctId);
-      const after=cur-totalTWD;
-      balEl.textContent=`目前餘額 $${fmt(cur)} → 扣除後 $${fmt(after)}`;
+      const after=isBuy?cur-totalTWD:cur+totalTWD;
+      const acctName=bankAccounts.find(a=>a.id===acctId)?.name||'';
+      balEl.textContent=`${acctName} 目前 $${fmt(cur)} → ${isBuy?'扣除':'增加'}後 $${fmt(after)}`;
       balEl.style.color=after<0?'var(--loss)':'var(--subtle)';
     } else { balEl.textContent=''; }
   }
@@ -1360,25 +1408,16 @@ function showAddModal() {
   // 依照目前市場自動預設「市場」欄位
   const defaultMkt=currentMarket==='us'?'us':currentMarket==='tw'?'tse':'tse';
   document.getElementById('fMarket').value=defaultMkt;
-  // 買入扣除現金區塊
-  const deductSec=document.getElementById('fDeductSection');
-  const deductSel=document.getElementById('fDeductAcct');
-  if(deductSec&&deductSel){
-    if(bankAccounts.length>0){
-      deductSec.style.display='block';
-      deductSel.innerHTML=`<option value="">不扣除</option>`+
-        bankAccounts.map(a=>`<option value="${escHtml(a.id)}">${escHtml(a.name)}</option>`).join('');
-    } else { deductSec.style.display='none'; }
-    document.getElementById('fDeductAmt').textContent='';
-    document.getElementById('fDeductBalance').textContent='';
-  }
+  _editingOldShares=0;
+  _setupDeductSection(defaultMkt);
   document.getElementById('addModal').style.display='flex';
   onTypeChange();
-  onMarketChange(); // 確保 currency / cost label 等隨市場正確初始化
+  onMarketChange();
 }
 function showEditModal(id) {
   const p=positions.find(x=>x.id===id); if (!p) return;
   editingId=id;
+  _editingOldShares=p.shares||0;
   document.getElementById('addModalTitle').textContent='編輯部位';
   document.getElementById('fCode').value=p.stockCode||'';
   document.getElementById('fName').value=p.stockName||'';
@@ -1390,6 +1429,7 @@ function showEditModal(id) {
   document.getElementById('fCost').value=p.avgCost||'';
   document.getElementById('fPrice').value=getPrice(p)||'';
   document.getElementById('fNotes').value=p.notes||'';
+  _setupDeductSection(p.market||'tse');
   document.getElementById('addModal').style.display='flex';
 }
 function hideAddModal() { document.getElementById('addModal').style.display='none'; }
@@ -1410,29 +1450,23 @@ function savePosition() {
   if (editingId) {
     const idx=positions.findIndex(p=>p.id===editingId);
     if (idx>=0) positions[idx]={...positions[idx],stockCode:code,stockName:name,type,market,shares,avgCost:cost,notes,currency:document.getElementById('fCurrency').value};
+    // ── 加碼/減碼自動調整現金 ──
+    const editAcctId=document.getElementById('fDeductAcct')?.value||'';
+    const shareDiff=shares-_editingOldShares;
+    if(editAcctId&&shareDiff!==0){
+      const rate2=usdTwdRate||32;
+      const diffAmt=Math.round(Math.abs(shareDiff)*(market==='us'?cost*rate2:cost));
+      if(diffAmt>0) _applyCashAdjust(editAcctId,shareDiff>0?-diffAmt:diffAmt,
+        shareDiff>0?`加碼 ${name} +${shareDiff.toLocaleString()}股（自動扣除）`:`減碼 ${name} ${shareDiff.toLocaleString()}股（自動增加）`);
+    }
   } else {
     positions.push({id:uid(),stockCode:code,stockName:name,market,type,shares,avgCost:cost,notes,currency:document.getElementById('fCurrency').value,transactions:[]});
-    // ── 自動扣除現金 ──
+    // ── 新增部位：扣除現金 ──
     const deductAcctId=document.getElementById('fDeductAcct')?.value||'';
     if(deductAcctId){
       const rate2=usdTwdRate||32;
       const deductAmt=Math.round(market==='us'?shares*cost*rate2:shares*cost);
-      if(deductAmt>0){
-        const sorted=[...cashSnapshots].sort((a,b)=>b.date.localeCompare(a.date));
-        const latestSnap=sorted[0];
-        const newAccts=latestSnap?.accounts?{...latestSnap.accounts}:{};
-        bankAccounts.forEach(a=>{ if(newAccts[a.id]===undefined) newAccts[a.id]=0; });
-        const curBal=parseFloat(newAccts[deductAcctId])||0;
-        newAccts[deductAcctId]=curBal-deductAmt;
-        cashSnapshots.push({
-          id:uid(),
-          date:new Date().toISOString().split('T')[0],
-          cash:Object.values(newAccts).reduce((s,v)=>s+(+v||0),0),
-          accounts:newAccts,
-          note:`買入 ${name} ${shares.toLocaleString()}股（自動扣除）`
-        });
-        toast(`已從「${bankAccounts.find(a=>a.id===deductAcctId)?.name}」扣除 $${fmt(deductAmt)}`);
-      }
+      if(deductAmt>0) _applyCashAdjust(deductAcctId,-deductAmt,`買入 ${name} ${shares.toLocaleString()}股（自動扣除）`);
     }
   }
   saveState(); hideAddModal(); render();
@@ -2749,6 +2783,10 @@ function renderCashTable(){
 function showBankModal(){
   _tmpBankAccts = bankAccounts.map(a=>({...a}));
   renderBankModalList();
+  // 填入指定帳戶 selects
+  const opts=(sel)=>`<option value="">未指定</option>`+_tmpBankAccts.filter(a=>a.name.trim()).map(a=>`<option value="${escHtml(a.id)}">${escHtml(a.name)}</option>`).join('');
+  const twSel=document.getElementById('twSecAcctSel'); if(twSel){ twSel.innerHTML=opts(); twSel.value=twSecuritiesAcctId; }
+  const usSel=document.getElementById('usSecAcctSel'); if(usSel){ usSel.innerHTML=opts(); usSel.value=usSecuritiesAcctId; }
   document.getElementById('bankModal').style.display='flex';
 }
 function hideBankModal(){ document.getElementById('bankModal').style.display='none'; }
@@ -2775,6 +2813,10 @@ function addBankAccountRow(){
 }
 function saveBankAccounts(){
   bankAccounts=_tmpBankAccts.filter(a=>a.name.trim());
+  twSecuritiesAcctId=document.getElementById('twSecAcctSel')?.value||'';
+  usSecuritiesAcctId=document.getElementById('usSecAcctSel')?.value||'';
+  localStorage.setItem('tw_securities_acct_v1',twSecuritiesAcctId);
+  localStorage.setItem('us_securities_acct_v1',usSecuritiesAcctId);
   saveState(); hideBankModal();
   toast('帳戶設定已儲存');
 }
@@ -2991,7 +3033,25 @@ window.onload=()=>{
       <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">設定後，新增現金記錄時會逐一填入各帳戶餘額，自動加總為現金總額。</div>
       <div id="bankAccountList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
       <button class="btn btn-outline btn-sm" onclick="addBankAccountRow()" style="width:100%;">+ 新增帳戶</button>
-      <div style="display:flex;gap:8px;margin-top:20px;justify-content:flex-end;">
+      <!-- 指定證券帳戶 -->
+      <div style="margin-top:16px;padding:12px;background:var(--hover-bg);border-radius:8px;border:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:8px;">指定證券帳戶（買賣時自動調整現金）</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">台股證券戶</div>
+            <select id="twSecAcctSel" style="width:100%;font-size:12px;padding:4px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);">
+              <option value="">未指定</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">美股證券戶</div>
+            <select id="usSecAcctSel" style="width:100%;font-size:12px;padding:4px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);">
+              <option value="">未指定</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
         <button class="btn btn-outline" onclick="hideBankModal()">取消</button>
         <button class="btn btn-primary" onclick="saveBankAccounts()">儲存</button>
       </div>
