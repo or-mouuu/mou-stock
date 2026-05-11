@@ -1246,27 +1246,36 @@ async function lookupUSStockName(){
   const nameEl=document.getElementById('fName');
   if(nameEl.value) return; // 已有名稱就不覆蓋
   nameEl.placeholder='查詢中…';
-  const bases=[
+  // 嘗試多個 endpoint + proxy
+  const proxies=(u)=>[u,`https://corsproxy.io/?${encodeURIComponent(u)}`,`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`];
+  const endpoints=[
     `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${code}`,
     `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${code}`,
+    `https://query2.finance.yahoo.com/v1/finance/search?q=${code}&quotesCount=3&newsCount=0`,
+    `https://query1.finance.yahoo.com/v1/finance/search?q=${code}&quotesCount=3&newsCount=0`,
   ];
-  for(const base of bases){
-    for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`]){
+  for(const base of endpoints){
+    for(const u of proxies(base)){
       try{
         const d=await fetchJSON(u); if(!d) continue;
+        // v7 quote format
         const q=d?.quoteResponse?.result?.[0];
         if(q?.shortName||q?.longName){
           nameEl.value=q.shortName||q.longName;
-          // 若現價欄位空白，順便帶入即時價
           const priceEl=document.getElementById('fPrice');
           if(!priceEl.value&&q.regularMarketPrice>0) priceEl.value=q.regularMarketPrice;
-          nameEl.placeholder='股票名稱 *';
-          return;
+          nameEl.placeholder='股票名稱 *'; return;
+        }
+        // v1 search format
+        const sq=d?.quotes?.find?.(x=>x.symbol===code)||d?.quotes?.[0];
+        if(sq?.shortName||sq?.longName){
+          nameEl.value=sq.shortName||sq.longName;
+          nameEl.placeholder='股票名稱 *'; return;
         }
       }catch(e){}
     }
   }
-  nameEl.placeholder='股票名稱 *';
+  nameEl.placeholder='找不到，請手動輸入';
 }
 function onTypeChange(){
   const type=document.getElementById('fType').value;
@@ -1310,9 +1319,12 @@ function showAddModal() {
   document.getElementById('addModalTitle').textContent='新增部位';
   ['fCode','fName','fShares','fCost','fPrice','fNotes'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('fType').value='長期';
-  document.getElementById('fMarket').value='tse';
+  // 依照目前市場自動預設「市場」欄位
+  const defaultMkt=currentMarket==='us'?'us':currentMarket==='tw'?'tse':'tse';
+  document.getElementById('fMarket').value=defaultMkt;
   document.getElementById('addModal').style.display='flex';
   onTypeChange();
+  onMarketChange(); // 確保 currency / cost label 等隨市場正確初始化
 }
 function showEditModal(id) {
   const p=positions.find(x=>x.id===id); if (!p) return;
