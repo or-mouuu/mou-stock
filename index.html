@@ -177,15 +177,28 @@
         <div style="margin-left:auto;display:flex;align-items:center;gap:5px;">
           <div id="realizedTWGroup" style="display:flex;align-items:center;gap:5px;">
             <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益</span>
-            <input id="realizedPnlInput" type="number" placeholder="0" readonly
-              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);outline:none;-moz-appearance:textfield;cursor:default;">
+            <!-- 唯讀顯示 -->
+            <span id="realizedPnlDisplay"
+              style="min-width:64px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);text-align:right;display:inline-block;">—</span>
+            <!-- 手動輸入（預設隱藏） -->
+            <input id="realizedPnlInput" type="number" placeholder="手動輸入"
+              style="display:none;width:80px;font-size:11px;border:1px solid #3b82f6;border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+              onblur="saveManualRealizedPnl('tw')" onkeydown="if(event.key==='Enter')saveManualRealizedPnl('tw')">
+            <!-- 鉛筆按鈕：切換手動輸入 -->
+            <button onclick="toggleRealizedEdit('tw')" id="realizedTWEditBtn" title="手動輸入已實現損益"
+              style="font-size:11px;padding:2px 5px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;line-height:1;">✏️</button>
             <button onclick="importRealizedCSV('tw')" title="從券商已實現損益CSV匯入"
               style="font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;white-space:nowrap;">匯入CSV</button>
           </div>
           <div id="realizedUSGroup" style="display:none;align-items:center;gap:5px;">
             <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益(TWD)</span>
-            <input id="realizedPnlUSInput" type="number" placeholder="0" readonly
-              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);outline:none;-moz-appearance:textfield;cursor:default;">
+            <span id="realizedPnlUSDisplay"
+              style="min-width:64px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);text-align:right;display:inline-block;">—</span>
+            <input id="realizedPnlUSInput" type="number" placeholder="手動輸入"
+              style="display:none;width:80px;font-size:11px;border:1px solid #3b82f6;border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
+              onblur="saveManualRealizedPnl('us')" onkeydown="if(event.key==='Enter')saveManualRealizedPnl('us')">
+            <button onclick="toggleRealizedEdit('us')" id="realizedUSEditBtn" title="手動輸入已實現損益"
+              style="font-size:11px;padding:2px 5px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;line-height:1;">✏️</button>
             <button onclick="importRealizedCSV('us')" title="從券商已實現損益CSV匯入"
               style="font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;white-space:nowrap;">匯入CSV</button>
           </div>
@@ -987,7 +1000,7 @@ function importRealizedCSV(market) {
     }
 
     // ── Step 1: 解析 CSV 並匯入 ──
-    let importedCount = 0;
+    let importedCount = 0, csvPnlTotal = 0;
     const parseCSVLine = line => {
       const cols = []; let cur = '', inQ = false;
       for (const ch of line) {
@@ -1010,6 +1023,9 @@ function importRealizedCSV(market) {
       const buyPrice  = parseFloat((cols[7]||'').replace(/,/g,'').trim());
       const sellPrice = parseFloat((cols[8]||'').replace(/,/g,'').trim());
       if (!csvStockName || isNaN(shares) || isNaN(buyPrice) || isNaN(sellPrice) || !buyDate || !sellDate) continue;
+
+      // 累計 CSV 損益欄（已含手續費/交易稅的淨損益）
+      if (!isNaN(pnl)) csvPnlTotal += pnl;
 
       const validPnl = !isNaN(pnl) ? pnl : undefined;
       const idx = positions.findIndex(p => p.stockName === csvStockName);
@@ -1043,47 +1059,70 @@ function importRealizedCSV(market) {
       toast('找不到有效資料，請確認CSV格式（欄位順序：股票名稱,日期,股數,損益,...）', 'err');
       return;
     }
+    // 直接以 CSV 損益欄加總寫入顯示用 key（已含手續費/交易稅，數值正確）
+    const dispKey = market === 'us' ? _RPNL_KEY.us : _RPNL_KEY.tw;
+    localStorage.setItem(dispKey, String(Math.round(csvPnlTotal)));
     saveState();
     _ytdCache = {};
     updateRealizedDisplay();
     fetchAndRenderYTD();
     renderTable();
-    toast(`已匯入 ${importedCount} 筆`);
+    const sign = csvPnlTotal >= 0 ? '+' : '';
+    toast(`已匯入 ${importedCount} 筆｜已實現損益 ${sign}${Math.round(csvPnlTotal).toLocaleString()} 元`);
   };
   input.click();
 }
 
-function calcTotalRealizedPnl(market) {
-  const isUS = market === 'us';
-  const posList = positions.filter(p => isUS ? isUSPos(p) : isTWPos(p));
-  let total = 0;
-  for (const pos of posList) {
-    let sh = 0, avgCost = 0;
-    const txs = [...(pos.transactions || [])].sort((a,b) => a.date.localeCompare(b.date));
-    for (const tx of txs) {
-      if (tx.action === 'buy') {
-        const ns = sh + tx.shares;
-        avgCost = ns > 0 ? (sh * avgCost + tx.shares * tx.price) / ns : tx.price;
-        sh = ns;
-      } else {
-        // Prefer the CSV-imported exact P&L (incl. fees/tax); fall back to gross calc
-        if (typeof tx.pnl === 'number' && !isNaN(tx.pnl)) {
-          total += tx.pnl;
-        } else {
-          total += (tx.price - avgCost) * tx.shares;
-        }
-        sh = Math.max(0, sh - tx.shares);
-      }
-    }
-  }
-  return Math.round(total);
-}
+// 已實現損益顯示：直接從 localStorage 讀取（由 CSV 匯入或手動輸入寫入）
+const _RPNL_KEY = { tw: 'realized_pnl_display_tw', us: 'realized_pnl_display_us' };
 
 function updateRealizedDisplay() {
-  const twInput = document.getElementById('realizedPnlInput');
-  const usInput = document.getElementById('realizedPnlUSInput');
-  if (twInput) twInput.value = calcTotalRealizedPnl('tw') || '';
-  if (usInput) usInput.value = calcTotalRealizedPnl('us') || '';
+  ['tw','us'].forEach(mkt => {
+    const val = parseFloat(localStorage.getItem(_RPNL_KEY[mkt])||'');
+    const displayEl = document.getElementById(mkt==='tw' ? 'realizedPnlDisplay' : 'realizedPnlUSDisplay');
+    if (!displayEl) return;
+    if (isNaN(val)) {
+      displayEl.textContent = '—';
+      displayEl.style.color = 'var(--muted)';
+    } else {
+      displayEl.textContent = (val >= 0 ? '+' : '') + Math.round(val).toLocaleString();
+      displayEl.style.color = val >= 0 ? 'var(--profit)' : 'var(--loss)';
+    }
+  });
+}
+
+function toggleRealizedEdit(market) {
+  const inputId = market === 'tw' ? 'realizedPnlInput' : 'realizedPnlUSInput';
+  const input = document.getElementById(inputId);
+  const displayId = market === 'tw' ? 'realizedPnlDisplay' : 'realizedPnlUSDisplay';
+  const display = document.getElementById(displayId);
+  const btn = document.getElementById(market === 'tw' ? 'realizedTWEditBtn' : 'realizedUSEditBtn');
+  if (!input) return;
+  const isEditing = input.style.display !== 'none';
+  if (isEditing) {
+    // 收起
+    input.style.display = 'none';
+    display.style.display = 'inline-block';
+    btn.textContent = '✏️';
+  } else {
+    // 展開輸入
+    const cur = parseFloat(localStorage.getItem(_RPNL_KEY[market])||'');
+    input.value = isNaN(cur) ? '' : Math.round(cur);
+    display.style.display = 'none';
+    input.style.display = '';
+    input.focus(); input.select();
+    btn.textContent = '✓';
+  }
+}
+
+function saveManualRealizedPnl(market) {
+  const inputId = market === 'tw' ? 'realizedPnlInput' : 'realizedPnlUSInput';
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const val = parseFloat(input.value);
+  if (!isNaN(val)) localStorage.setItem(_RPNL_KEY[market], String(Math.round(val)));
+  toggleRealizedEdit(market); // collapse back to display mode
+  updateRealizedDisplay();
 }
 
 function toast(msg, type='ok') {
@@ -2679,7 +2718,7 @@ async function fetchAndRenderYTD(){
 // ════════════════════════════════════════════════
 // NET WORTH VIEW
 // ════════════════════════════════════════════════
-const _YTD_CODE_VER = 6; // bump to bust stale in-memory cache after algorithm changes
+const _YTD_CODE_VER = 7; // bump to bust stale in-memory cache after algorithm changes
 function ytdCacheKey(market){
   const pos=positions.filter(p=>market==='tw'?isTWPos(p):isUSPos(p));
   const hash=pos.map(p=>p.stockCode+':'+p.shares).sort().join('|');
