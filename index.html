@@ -603,12 +603,27 @@ function loadState() {
   positions.forEach(p=>{ if(p.type==='美股') p.type='長期'; });
   // 一次性修復：掃描所有持倉，補齊舊格式 _isInitial 旗標、清除重複初始交易
   _repairAllPositions();
+  // 一次性清除可能錯誤的 Dec-31 收盤價快取（localStorage），強制重新抓取正確值
+  const _DEC31_CACHE_VER = '5';
+  if (localStorage.getItem('_dec31cv') !== _DEC31_CACHE_VER) {
+    Object.keys(localStorage).filter(k => k.startsWith('dec31p_')).forEach(k => localStorage.removeItem(k));
+    localStorage.setItem('_dec31cv', _DEC31_CACHE_VER);
+  }
 }
 
 function _repairAllPositions(){
   let dirty=false;
   positions.forEach((p,idx)=>{
-    const txs=p.transactions||[];
+    let txs=p.transactions||[];
+    // ── 清除舊版 importRealizedCSV 錯誤添加的 2025 買進紀錄 ──
+    // 舊版會對已有持倉的個股同時加入買+賣，導致 Dec-31 股數被雙計算。
+    // 正確做法：只對既有持倉加賣出紀錄，買進已由 _isInitial 交易代表。
+    const before = txs.length;
+    txs = txs.filter(t => !(t._imported && t.action === 'buy' && t.date < '2026-01-01'));
+    if (txs.length < before) {
+      positions[idx].transactions = txs;
+      dirty = true;
+    }
     // 找出所有「初始持倉」交易（舊版可能沒有 _isInitial 旗標）
     const initIdxs=txs.reduce((arr,t,i)=>{
       if(t._isInitial||(t.id&&t.id===('init_'+p.id))||t.note==='初始持倉') arr.push(i);
@@ -968,33 +983,42 @@ function importRealizedCSV(market) {
 
       const csvStockName = (cols[0]||'').trim();
       const shares = parseFloat((cols[2]||'').replace(/,/g,'').trim());
-      const buyDate = (cols[5]||'').trim().replace(/\//g, '-');
+      const pnl    = parseFloat((cols[3]||'').replace(/,/g,'').trim()); // 損益（已含手續費/交易稅）
+      const buyDate  = (cols[5]||'').trim().replace(/\//g, '-');
       const sellDate = (cols[6]||'').trim().replace(/\//g, '-');
-      const buyPrice = parseFloat((cols[7]||'').replace(/,/g,'').trim());
+      const buyPrice  = parseFloat((cols[7]||'').replace(/,/g,'').trim());
       const sellPrice = parseFloat((cols[8]||'').replace(/,/g,'').trim());
 
       if (!csvStockName || isNaN(shares) || isNaN(buyPrice) || isNaN(sellPrice) || !buyDate || !sellDate) continue;
 
-      // Check for existing position by stock name
+      // Find existing position by stock name
       const idx = positions.findIndex(p => p.stockName === csvStockName);
 
       if (idx >= 0) {
         const p = positions[idx];
         if (!p.transactions) p.transactions = [];
-        // Duplicate check: skip if same sell already imported
+        // Duplicate check: same sell date + same shares (regardless of source)
         const isDuplicate = p.transactions.some(t =>
-          t._imported && t.action === 'sell' && t.date === sellDate && t.shares === shares
+          t.action === 'sell' && t.date === sellDate && t.shares === shares
         );
         if (isDuplicate) { skippedCount++; continue; }
-        // Push buy+sell pair without recalculating (existing position shares/avgCost remain intact)
-        p.transactions.push({id: uid(), date: buyDate, action: 'buy', shares, price: buyPrice, note: 'CSV匯入', _imported: true});
-        p.transactions.push({id: uid(), date: sellDate, action: 'sell', shares, price: sellPrice, note: 'CSV匯入', _imported: true});
+        // For EXISTING positions: only add the SELL transaction.
+        // The buy is already captured by the position's existing transaction history.
+        // We do NOT re-add the buy, which would double-count Dec-31 shares in TWR.
+        p.transactions.push({
+          id: uid(), date: sellDate, action: 'sell',
+          shares, price: sellPrice, note: 'CSV匯入', _imported: true,
+          pnl: isNaN(pnl) ? undefined : pnl  // store exact CSV P&L (incl. fees)
+        });
+        const posIdx = positions.indexOf(p);
+        recalcFromTransactions(posIdx);
         importedCount++;
       } else {
-        // Create new closed position
+        // NEW position (stock not in system): create as closed with buy+sell pair
+        const newId = uid();
         const newPos = {
-          id: uid(),
-          stockCode: csvStockName,
+          id: newId,
+          stockCode: csvStockName, // no known code; use name as placeholder
           stockName: csvStockName,
           market: market === 'us' ? 'us' : 'tw',
           type: '股票',
@@ -1003,9 +1027,11 @@ function importRealizedCSV(market) {
           closed: true,
           currency: market === 'us' ? 'USD' : 'TWD',
           transactions: [
-            {id: uid(), date: buyDate, action: 'buy', shares, price: buyPrice, note: 'CSV匯入', _imported: true},
-            {id: uid(), date: sellDate, action: 'sell', shares, price: sellPrice, note: 'CSV匯入', _imported: true}
-          ]
+            {id: uid(), date: buyDate,  action: 'buy',  shares, price: buyPrice,  note: 'CSV匯入', _imported: true},
+            {id: uid(), date: sellDate, action: 'sell', shares, price: sellPrice, note: 'CSV匯入', _imported: true,
+             pnl: isNaN(pnl) ? undefined : pnl}
+          ],
+          initialShares: 0
         };
         positions.push(newPos);
         importedCount++;
@@ -1040,7 +1066,12 @@ function calcTotalRealizedPnl(market) {
         avgCost = ns > 0 ? (sh * avgCost + tx.shares * tx.price) / ns : tx.price;
         sh = ns;
       } else {
-        total += (tx.price - avgCost) * tx.shares;
+        // Prefer the CSV-imported exact P&L (incl. fees/tax); fall back to gross calc
+        if (typeof tx.pnl === 'number' && !isNaN(tx.pnl)) {
+          total += tx.pnl;
+        } else {
+          total += (tx.price - avgCost) * tx.shares;
+        }
         sh = Math.max(0, sh - tx.shares);
       }
     }
@@ -2648,7 +2679,7 @@ async function fetchAndRenderYTD(){
 // ════════════════════════════════════════════════
 // NET WORTH VIEW
 // ════════════════════════════════════════════════
-const _YTD_CODE_VER = 4; // bump to bust stale in-memory cache after algorithm changes
+const _YTD_CODE_VER = 5; // bump to bust stale in-memory cache after algorithm changes
 function ytdCacheKey(market){
   const pos=positions.filter(p=>market==='tw'?isTWPos(p):isUSPos(p));
   const hash=pos.map(p=>p.stockCode+':'+p.shares).sort().join('|');
