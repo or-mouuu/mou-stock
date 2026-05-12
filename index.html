@@ -296,7 +296,6 @@
     <div style="display:flex;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;">
       <div style="font-size:14px;font-weight:600;">現金記錄</div>
       <div style="margin-left:auto;display:flex;gap:8px;">
-        <button class="btn btn-outline btn-sm" onclick="showBankModal()">⚙ 帳戶設定</button>
         <button class="btn btn-primary btn-sm" onclick="showAddCashModal()">+ 新增記錄</button>
       </div>
     </div>
@@ -564,8 +563,6 @@ let cwMaxYears   = 30;
 let cwCategories = null;   // [{name,pct,rate}] — initialized in loadState
 let _cwChart     = null;
 let editingCashId = null;
-let bankAccounts  = [];   // [{id, name}]
-let _tmpBankAccts = [];   // temp copy while editing bank modal
 let _editingOldShares  = 0;   // 編輯部位時記住舊股數
 let _dailyVer = 0;         // incremented on each market switch to cancel stale renders
 let _ytdVer   = 0;
@@ -592,7 +589,6 @@ function loadState() {
   } catch(e) { positions = []; prices = {}; }
   try {
     const cs=localStorage.getItem('cash_snapshots_v1'); if(cs) cashSnapshots=JSON.parse(cs);
-    const ba=localStorage.getItem('bank_accounts_v1');  if(ba) bankAccounts=JSON.parse(ba);
     const wg=localStorage.getItem('wealth_goals_v2');
     if(wg){ wealthGoals=JSON.parse(wg); }
     else { const old=parseFloat(localStorage.getItem('wealth_goal_v1')||'0')||0; if(old>0) wealthGoals=[{id:uid(),name:'財富目標',amount:old}]; }
@@ -660,7 +656,6 @@ function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
   localStorage.setItem(PRICES_KEY,  JSON.stringify(prices));
   localStorage.setItem('cash_snapshots_v1', JSON.stringify(cashSnapshots));
-  localStorage.setItem('bank_accounts_v1',  JSON.stringify(bankAccounts));
   localStorage.setItem('wealth_goals_v2',   JSON.stringify(wealthGoals));
   _ytdCache = {}; // 持倉異動時清除 YTD cache
 }
@@ -2843,131 +2838,39 @@ function renderCashTable(){
   }
   empty.style.display='none';
 
-  const hasAccts = bankAccounts.length > 0;
-
   // ── Header ──
   if(thead){
-    if(hasAccts){
-      thead.innerHTML=`<tr>
-        <th style="padding-left:20px;">日期</th>
-        ${bankAccounts.map(a=>`<th>${escHtml(a.name)}</th>`).join('')}
-        <th>現金合計</th>
-        <th>備註</th>
-        <th style="text-align:center;">操作</th>
-      </tr>`;
-    } else {
-      thead.innerHTML=`<tr>
-        <th style="padding-left:20px;">日期</th>
-        <th>現金餘額</th>
-        <th>備註</th>
-        <th style="text-align:center;">操作</th>
-      </tr>`;
-    }
+    thead.innerHTML=`<tr>
+      <th style="padding-left:20px;">日期</th>
+      <th>現金餘額</th>
+      <th>備註</th>
+      <th style="text-align:center;">操作</th>
+    </tr>`;
   }
 
   // ── Body ──
   tbody.innerHTML = sorted.map((r,idx)=>{
     const cashTotal = getCashTotal(r);
     const prev = sorted[idx+1]; // older record
-
-    if(hasAccts){
-      const acctCells = bankAccounts.map(a=>{
-        const val = r.accounts?.[a.id] ?? null;
-        const prevVal = prev?.accounts?.[a.id] ?? null;
-        let diffHtml = '';
-        if(val !== null && prevVal !== null){
-          const diff = val - prevVal;
-          if(diff !== 0){
-            const cls = diff > 0 ? 'pos' : 'neg';
-            const sign = diff > 0 ? '+' : '';
-            diffHtml = `<div class="${cls}" style="font-size:10px;">${sign}${fmt(diff)}</div>`;
-          }
-        }
-        return `<td style="font-variant-numeric:tabular-nums;">
-          ${val !== null ? '$'+fmt(val) : '<span style="color:var(--subtle);">—</span>'}
-          ${diffHtml}
-        </td>`;
-      }).join('');
-
-      // total diff vs prev
-      const prevTotal = prev ? getCashTotal(prev) : null;
-      let totalDiffHtml = '';
-      if(prevTotal !== null){
-        const diff = cashTotal - prevTotal;
-        if(diff !== 0){
-          const cls = diff > 0 ? 'pos' : 'neg';
-          totalDiffHtml = `<div class="${cls}" style="font-size:10px;">${diff>0?'+':''}${fmt(diff)}</div>`;
-        }
+    const prevTotal = prev ? getCashTotal(prev) : null;
+    let diffHtml = '';
+    if(prevTotal !== null){
+      const diff = cashTotal - prevTotal;
+      if(diff !== 0){
+        const cls = diff>0?'pos':'neg';
+        diffHtml=`<div class="${cls}" style="font-size:10px;">${diff>0?'+':''}${fmt(diff)}</div>`;
       }
-
-      return `<tr>
-        <td style="padding-left:20px;font-weight:500;white-space:nowrap;">${r.date}</td>
-        ${acctCells}
-        <td style="font-weight:600;font-variant-numeric:tabular-nums;">
-          $${fmt(cashTotal)}${totalDiffHtml}
-        </td>
-        <td style="color:var(--muted);font-size:12px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
-        <td style="text-align:center;white-space:nowrap;">
-          <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
-        </td>
-      </tr>`;
-    } else {
-      // no accounts: simple view
-      const prevTotal = prev ? getCashTotal(prev) : null;
-      let diffHtml = '';
-      if(prevTotal !== null){
-        const diff = cashTotal - prevTotal;
-        if(diff !== 0){
-          const cls = diff>0?'pos':'neg';
-          diffHtml=`<div class="${cls}" style="font-size:10px;">${diff>0?'+':''}${fmt(diff)}</div>`;
-        }
-      }
-      return `<tr>
-        <td style="padding-left:20px;font-weight:500;white-space:nowrap;">${r.date}</td>
-        <td style="font-variant-numeric:tabular-nums;">$${fmt(cashTotal)}${diffHtml}</td>
-        <td style="color:var(--muted);font-size:12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
-        <td style="text-align:center;white-space:nowrap;">
-          <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
-        </td>
-      </tr>`;
     }
+    return `<tr>
+      <td style="padding-left:20px;font-weight:500;white-space:nowrap;">${r.date}</td>
+      <td style="font-variant-numeric:tabular-nums;">$${fmt(cashTotal)}${diffHtml}</td>
+      <td style="color:var(--muted);font-size:12px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.note||''}</td>
+      <td style="text-align:center;white-space:nowrap;">
+        <button class="btn btn-ghost btn-sm" onclick="editCashRecord('${r.id}')">編輯</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteCashRecord('${r.id}')">刪除</button>
+      </td>
+    </tr>`;
   }).join('');
-}
-
-// ── 帳戶設定 modal ──
-function showBankModal(){
-  _tmpBankAccts = bankAccounts.map(a=>({...a}));
-  renderBankModalList();
-  document.getElementById('bankModal').style.display='flex';
-}
-function hideBankModal(){ document.getElementById('bankModal').style.display='none'; }
-function renderBankModalList(){
-  const el=document.getElementById('bankAccountList');
-  if(!_tmpBankAccts.length){
-    el.innerHTML='<div style="text-align:center;color:var(--subtle);font-size:12px;padding:12px;">尚無帳戶，點擊下方新增</div>';
-    return;
-  }
-  el.innerHTML=_tmpBankAccts.map((a,i)=>`
-    <div style="display:flex;align-items:center;gap:8px;">
-      <span style="font-size:13px;color:var(--muted);width:20px;text-align:center;flex-shrink:0;">${i+1}</span>
-      <input type="text" value="${escHtml(a.name)}" placeholder="帳戶名稱（例：國泰活存）"
-        oninput="_tmpBankAccts[${i}].name=this.value"
-        style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text);background:var(--bg);">
-      <button class="btn btn-danger btn-sm" onclick="_tmpBankAccts.splice(${i},1);renderBankModalList()">刪除</button>
-    </div>`).join('');
-}
-function addBankAccountRow(){
-  _tmpBankAccts.push({id:uid(),name:''});
-  renderBankModalList();
-  // focus last input
-  setTimeout(()=>{ const ins=document.querySelectorAll('#bankAccountList input[type=text]'); if(ins.length) ins[ins.length-1].focus(); },50);
-}
-function saveBankAccounts(){
-  bankAccounts=_tmpBankAccts.filter(a=>a.name.trim());
-  saveState(); hideBankModal();
-  toast('帳戶設定已儲存');
 }
 
 // ── 現金記錄 modal 帳戶輸入區 ──
@@ -2976,71 +2879,10 @@ function getCashTotal(r){
     return Object.values(r.accounts).reduce((s,v)=>s+(+v||0),0);
   return r.cash||0;
 }
-function renderCashAccountInputs(snapshot){
-  const el=document.getElementById('cashAccountInputs'); if(!el) return;
-  if(!bankAccounts.length){
-    el.innerHTML=`
-      <div>
-        <label class="field-label">現金總額（所有帳戶合計）</label>
-        <input type="number" id="cashAmountFallback" placeholder="0" style="width:100%;"
-          value="${snapshot?getCashTotal(snapshot):''}">
-        <div style="font-size:11px;color:var(--subtle);margin-top:4px;">尚未設定帳戶，可點擊「⚙ 帳戶設定」分帳追蹤</div>
-      </div>`;
-    return;
-  }
-  el.innerHTML=`
-    <div>
-      <label class="field-label">各帳戶餘額</label>
-      <div style="display:flex;flex-direction:column;gap:10px;">
-        ${bankAccounts.map(a=>`
-          <div>
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:500;">${escHtml(a.name)}</div>
-            <div style="display:flex;align-items:center;gap:6px;">
-              <input type="number" id="cashAcct_${a.id}" placeholder="0"
-                value="${snapshot?.accounts?.[a.id]!=null?snapshot.accounts[a.id]:''}"
-                oninput="updateCashAcctTotal()"
-                style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;color:var(--text);background:var(--bg);">
-              <button type="button" onclick="adjustAcct('${a.id}',-1)"
-                style="width:30px;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--hover-bg);color:var(--text);font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;">−</button>
-              <input type="number" id="cashStep_${a.id}" placeholder="調整" min="0"
-                style="width:80px;padding:7px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;color:var(--text);background:var(--bg);text-align:center;">
-              <button type="button" onclick="adjustAcct('${a.id}',1)"
-                style="width:30px;height:34px;border:1px solid var(--border);border-radius:6px;background:var(--hover-bg);color:var(--text);font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;">+</button>
-            </div>
-          </div>`).join('')}
-      </div>
-      <div style="display:flex;justify-content:flex-end;font-size:12px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border);">
-        合計：<span id="cashAcctTotal" style="font-weight:700;color:var(--text);margin-left:4px;">$0</span>
-      </div>
-    </div>`;
-  updateCashAcctTotal();
-}
-function adjustAcct(id, sign){
-  const balInput  = document.getElementById('cashAcct_'+id);
-  const stepInput = document.getElementById('cashStep_'+id);
-  const step = parseFloat(stepInput?.value)||0;
-  if(!step){ stepInput?.focus(); return; }
-  const current = parseFloat(balInput.value)||0;
-  balInput.value = Math.max(0, current + sign*step);
-  updateCashAcctTotal();
-}
-function updateCashAcctTotal(){
-  let t=0;
-  bankAccounts.forEach(a=>{ t+=parseFloat(document.getElementById('cashAcct_'+a.id)?.value)||0; });
-  const el=document.getElementById('cashAcctTotal'); if(el) el.textContent='$'+fmt(t);
-}
 function getCashInputTotal(){
-  if(!bankAccounts.length) return parseFloat(document.getElementById('cashAmountFallback')?.value)||0;
-  let t=0;
-  bankAccounts.forEach(a=>{ t+=parseFloat(document.getElementById('cashAcct_'+a.id)?.value)||0; });
-  return t;
+  return parseFloat(document.getElementById('cashAmount')?.value)||0;
 }
-function getCashInputAccounts(){
-  if(!bankAccounts.length) return null;
-  const obj={};
-  bankAccounts.forEach(a=>{ obj[a.id]=parseFloat(document.getElementById('cashAcct_'+a.id)?.value)||0; });
-  return obj;
-}
+function getCashInputAccounts(){ return null; }
 
 // ── 現金記錄 CRUD ──
 function showAddCashModal(){
@@ -3054,7 +2896,7 @@ function showAddCashModal(){
   document.getElementById('cashUSStock').value=usV||'';
   document.getElementById('cashGold').value   =gV||'';
   document.getElementById('cashNote').value='';
-  renderCashAccountInputs(null);
+  document.getElementById('cashAmount').value='';
   document.getElementById('cashModal').style.display='flex';
 }
 function editCashRecord(id){
@@ -3066,7 +2908,7 @@ function editCashRecord(id){
   document.getElementById('cashUSStock').value=r.usStock!=null?r.usStock:'';
   document.getElementById('cashGold').value   =r.gold!=null?r.gold:'';
   document.getElementById('cashNote').value   =r.note||'';
-  renderCashAccountInputs(r);
+  document.getElementById('cashAmount').value =getCashTotal(r)||'';
   document.getElementById('cashModal').style.display='flex';
 }
 function hideCashModal(){document.getElementById('cashModal').style.display='none';editingCashId=null;}
@@ -3139,8 +2981,10 @@ window.onload=()=>{
           <label class="field-label">日期</label>
           <input type="date" id="cashDate" style="width:100%;">
         </div>
-        <!-- 動態現金輸入區（依帳戶設定產生） -->
-        <div id="cashAccountInputs"></div>
+        <div>
+          <label class="field-label">金額</label>
+          <input type="number" id="cashAmount" placeholder="0" style="width:100%;">
+        </div>
         <div>
           <label class="field-label">股票 &amp; 黃金市值（自動帶入，可修改）</label>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
@@ -3167,24 +3011,6 @@ window.onload=()=>{
       <div style="display:flex;gap:8px;margin-top:20px;justify-content:flex-end;">
         <button class="btn btn-outline" onclick="hideCashModal()">取消</button>
         <button class="btn btn-primary" onclick="saveCashRecord()">儲存</button>
-      </div>
-    </div>
-  </div>
-</div>
-<!-- ═══ BANK ACCOUNTS MODAL ═══ -->
-<div id="bankModal" style="display:none;" class="modal-bg" onclick="if(event.target===this)hideBankModal()">
-  <div class="modal" style="max-width:420px;">
-    <div class="modal-header">
-      <div class="modal-title">⚙ 銀行帳戶設定</div>
-      <button class="modal-close" onclick="hideBankModal()">×</button>
-    </div>
-    <div class="modal-body">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">設定後，新增現金記錄時會逐一填入各帳戶餘額，自動加總為現金總額。</div>
-      <div id="bankAccountList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
-      <button class="btn btn-outline btn-sm" onclick="addBankAccountRow()" style="width:100%;">+ 新增帳戶</button>
-      <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
-        <button class="btn btn-outline" onclick="hideBankModal()">取消</button>
-        <button class="btn btn-primary" onclick="saveBankAccounts()">儲存</button>
       </div>
     </div>
   </div>
