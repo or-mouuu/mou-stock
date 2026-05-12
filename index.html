@@ -561,6 +561,7 @@ let positions  = [];
 let prices     = {};
 let currentTab    = 'all';
 let currentMarket = 'net';  // 'tw' | 'us' | 'net'
+let _closedExpanded = false;
 function isUSPos(p)   { return p.market==='us'||p.currency==='USD'; }
 function isGoldPos(p) { return p.market==='gold'||p.type==='黃金'; }
 function isTWPos(p)   { return !isUSPos(p)&&!isGoldPos(p); }
@@ -1178,6 +1179,71 @@ function getClosedFiltered() {
   ).filter(p => !q||p.stockName.toLowerCase().includes(q)||(p.stockCode||'').includes(q));
 }
 
+function calcClosedPnl(p) {
+  const txs = (p.transactions || []).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  let totalBuyCost = 0, totalBuyShares = 0;
+  let totalSellProceeds = 0, totalSellShares = 0;
+  let txPnlTotal = 0, hasTxPnl = false;
+
+  txs.forEach(t => {
+    if (t.action === 'buy') {
+      totalBuyCost += (t.price || 0) * (t.shares || 0);
+      totalBuyShares += (t.shares || 0);
+    } else if (t.action === 'sell') {
+      totalSellProceeds += (t.price || 0) * (t.shares || 0);
+      totalSellShares += (t.shares || 0);
+      if (t.pnl != null) { txPnlTotal += t.pnl; hasTxPnl = true; }
+    }
+  });
+
+  const avgBuyPrice  = totalBuyShares  > 0 ? totalBuyCost / totalBuyShares : 0;
+  const avgSellPrice = totalSellShares > 0 ? totalSellProceeds / totalSellShares : 0;
+  const grossPnl = totalSellProceeds - totalBuyCost;
+  const pnl = hasTxPnl ? txPnlTotal : grossPnl;
+  const ret = totalBuyCost > 0 ? pnl / totalBuyCost * 100 : 0;
+  return { avgBuyPrice, avgSellPrice, pnl, ret, totalBuyCost, totalSellProceeds, totalSellShares };
+}
+
+function _closedPosRow(p) {
+  const { avgBuyPrice, avgSellPrice, pnl, ret, totalBuyCost, totalSellProceeds, totalSellShares } = calcClosedPnl(p);
+  const cls  = pnlCls(pnl);
+  const sign = pnlSign(pnl);
+  const badgeCls = p.type==='ETF'?'etf':p.type==='長期'?'long':isGoldPos(p)?'gold':isUSPos(p)?'us':'short';
+  const badge = `<span class="badge badge-${badgeCls}">${p.type}</span>`;
+  const fbd = firstBuyDate(p);
+  const lsd = (p.transactions||[]).filter(t=>t.action==='sell').map(t=>t.date).sort().pop() || '';
+  let holdStr = '—';
+  if (fbd && lsd) {
+    const days = Math.round((new Date(lsd)-new Date(fbd))/(1000*60*60*24));
+    holdStr = `<div style="font-size:12px;">${fbd}</div><div style="font-size:11px;color:var(--subtle);">${days}天</div>`;
+  } else if (fbd) {
+    holdStr = `<div style="font-size:12px;">${fbd}</div>`;
+  }
+  const cur = isUSPos(p) ? '$' : '';
+  return `<tr onclick="showDetailModal('${p.id}')" style="opacity:0.6;">
+    <td style="padding-left:20px;">
+      <div style="font-weight:600;">${p.stockName}</div>
+      <div style="font-size:11px;color:var(--subtle);">${p.stockCode||'未設代號'}</div>
+    </td>
+    <td>${badge}</td>
+    <td style="font-size:11px;color:var(--muted);">已清倉</td>
+    <td style="font-variant-numeric:tabular-nums;">${totalSellShares.toLocaleString()}</td>
+    <td style="font-variant-numeric:tabular-nums;">${cur}${fmtD(avgBuyPrice)}</td>
+    <td style="font-variant-numeric:tabular-nums;font-weight:600;">${cur}${fmtD(avgSellPrice)}</td>
+    <td style="font-variant-numeric:tabular-nums;">$${fmt(totalBuyCost)}</td>
+    <td style="font-variant-numeric:tabular-nums;">$${fmt(totalSellProceeds)}</td>
+    <td class="${cls}" style="font-weight:600;font-variant-numeric:tabular-nums;">${sign}$${fmt(pnl)}</td>
+    <td class="${cls}" style="font-variant-numeric:tabular-nums;">${sign}${fmtD(ret)}%</td>
+    <td>${holdStr}</td>
+    <td onclick="event.stopPropagation()" style="text-align:center;">
+      <div style="display:flex;gap:4px;justify-content:center;">
+        <button class="btn btn-outline btn-sm" onclick="showEditModal('${p.id}')">編輯</button>
+        <button class="btn btn-danger btn-sm" onclick="delPosition('${p.id}')">刪除</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
 function _posRow(p, isClosed=false) {
   const {price,priceUSD,cost,value,pnl,ret} = calc(p);
   const displayPrice = isUSPos(p) && priceUSD!=null ? priceUSD : price;
@@ -1228,12 +1294,18 @@ function renderTable() {
 
   let html = rows.map(p => _posRow(p, false)).join('');
 
-  // 已清倉部位附在最下方（灰淡顯示，仍可點入查看交易紀錄）
+  // 已清倉部位（可折疊）
   if(closed.length){
-    html += `<tr><td colspan="12" style="padding:6px 20px 2px;font-size:11px;font-weight:600;
-      color:var(--muted);text-transform:uppercase;letter-spacing:.05em;border-top:1px solid var(--border);">
-      已清倉（${closed.length}）</td></tr>`;
-    html += closed.map(p => _posRow(p, true)).join('');
+    const arrow = _closedExpanded ? '▾' : '▸';
+    html += `<tr onclick="_closedExpanded=!_closedExpanded;renderTable()" style="cursor:pointer;">
+      <td colspan="12" style="padding:8px 20px;font-size:12px;font-weight:600;
+        color:var(--muted);letter-spacing:.05em;border-top:1px solid var(--border);
+        user-select:none;">
+        ${arrow} 已清倉（${closed.length}）
+      </td></tr>`;
+    if(_closedExpanded){
+      html += closed.map(p => _closedPosRow(p)).join('');
+    }
   }
 
   tbody.innerHTML = html;
