@@ -1406,7 +1406,7 @@ function renderCharts() {
     <div style="height:1px;background:var(--border);margin:8px 0;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
       ${smallStat('總投入成本','$'+fmt(totalCost))}
-      ${smallStat('總水位','$'+fmt(total))}
+      ${smallStat('總預估現值','$'+fmt(total))}
       ${smallStat('未實現損益','<span class="'+pnlCls(pnl)+'">'+sign+'$'+fmt(pnl)+'</span>')}
       ${smallStat('整體報酬率','<span class="'+pnlCls(pnl)+'">'+sign+fmtD(ret)+'%</span>')}
     </div>`;
