@@ -177,17 +177,15 @@
         <div style="margin-left:auto;display:flex;align-items:center;gap:5px;">
           <div id="realizedTWGroup" style="display:flex;align-items:center;gap:5px;">
             <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益</span>
-            <input id="realizedPnlInput" type="number" placeholder="0"
-              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
-              oninput="localStorage.setItem('realized_pnl_v1',this.value||'0');_ytdCache={};fetchAndRenderYTD()">
+            <input id="realizedPnlInput" type="number" placeholder="0" readonly
+              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);outline:none;-moz-appearance:textfield;cursor:default;">
             <button onclick="importRealizedCSV('tw')" title="從券商已實現損益CSV匯入"
               style="font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;white-space:nowrap;">匯入CSV</button>
           </div>
           <div id="realizedUSGroup" style="display:none;align-items:center;gap:5px;">
             <span style="font-size:10px;color:var(--muted);white-space:nowrap;">已實現損益(TWD)</span>
-            <input id="realizedPnlUSInput" type="number" placeholder="0"
-              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--text);outline:none;-moz-appearance:textfield;"
-              oninput="localStorage.setItem('realized_pnl_us_v1',this.value||'0');_ytdCache={};fetchAndRenderYTD()">
+            <input id="realizedPnlUSInput" type="number" placeholder="0" readonly
+              style="width:72px;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--surface);color:var(--text);outline:none;-moz-appearance:textfield;cursor:default;">
             <button onclick="importRealizedCSV('us')" title="從券商已實現損益CSV匯入"
               style="font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--muted);cursor:pointer;white-space:nowrap;">匯入CSV</button>
           </div>
@@ -954,7 +952,8 @@ function importRealizedCSV(market) {
     const file = input.files[0]; if (!file) return;
     const text = await file.text();
     const lines = text.split(/\r?\n/).slice(1); // skip header
-    let total = 0, count = 0;
+    let importedCount = 0, skippedCount = 0;
+
     for (const line of lines) {
       if (!line.trim()) continue;
       // Parse CSV respecting quoted fields (handles "1,000" and "-1,061")
@@ -966,20 +965,94 @@ function importRealizedCSV(market) {
         else cur += ch;
       }
       cols.push(cur);
-      // Column index 3 = 損益
-      const pnl = parseFloat((cols[3]||'').replace(/,/g,'').trim());
-      if (!isNaN(pnl)) { total += pnl; count++; }
+
+      const csvStockName = (cols[0]||'').trim();
+      const shares = parseFloat((cols[2]||'').replace(/,/g,'').trim());
+      const buyDate = (cols[5]||'').trim().replace(/\//g, '-');
+      const sellDate = (cols[6]||'').trim().replace(/\//g, '-');
+      const buyPrice = parseFloat((cols[7]||'').replace(/,/g,'').trim());
+      const sellPrice = parseFloat((cols[8]||'').replace(/,/g,'').trim());
+
+      if (!csvStockName || isNaN(shares) || isNaN(buyPrice) || isNaN(sellPrice) || !buyDate || !sellDate) continue;
+
+      // Check for existing position by stock name
+      const idx = positions.findIndex(p => p.stockName === csvStockName);
+
+      if (idx >= 0) {
+        const p = positions[idx];
+        if (!p.transactions) p.transactions = [];
+        // Duplicate check: skip if same sell already imported
+        const isDuplicate = p.transactions.some(t =>
+          t._imported && t.action === 'sell' && t.date === sellDate && t.shares === shares
+        );
+        if (isDuplicate) { skippedCount++; continue; }
+        // Push buy+sell pair without recalculating (existing position shares/avgCost remain intact)
+        p.transactions.push({id: uid(), date: buyDate, action: 'buy', shares, price: buyPrice, note: 'CSV匯入', _imported: true});
+        p.transactions.push({id: uid(), date: sellDate, action: 'sell', shares, price: sellPrice, note: 'CSV匯入', _imported: true});
+        importedCount++;
+      } else {
+        // Create new closed position
+        const newPos = {
+          id: uid(),
+          stockCode: csvStockName,
+          stockName: csvStockName,
+          market: market === 'us' ? 'us' : 'tw',
+          type: '股票',
+          shares: 0,
+          avgCost: 0,
+          closed: true,
+          currency: market === 'us' ? 'USD' : 'TWD',
+          transactions: [
+            {id: uid(), date: buyDate, action: 'buy', shares, price: buyPrice, note: 'CSV匯入', _imported: true},
+            {id: uid(), date: sellDate, action: 'sell', shares, price: sellPrice, note: 'CSV匯入', _imported: true}
+          ]
+        };
+        positions.push(newPos);
+        importedCount++;
+      }
     }
-    if (!count) { toast('找不到損益數值，請確認CSV格式（欄位順序：股票名稱,日期,股數,損益,...）', 'err'); return; }
-    const key = market==='tw' ? 'realized_pnl_v1' : 'realized_pnl_us_v1';
-    const inputEl = document.getElementById(market==='tw' ? 'realizedPnlInput' : 'realizedPnlUSInput');
-    localStorage.setItem(key, String(Math.round(total)));
-    if (inputEl) inputEl.value = Math.round(total);
+
+    if (importedCount === 0 && skippedCount === 0) {
+      toast('找不到有效資料，請確認CSV格式（欄位順序：股票名稱,日期,股數,損益,...）', 'err');
+      return;
+    }
+
+    saveState();
     _ytdCache = {};
+    updateRealizedDisplay();
     fetchAndRenderYTD();
-    toast(`已匯入 ${count} 筆｜已實現損益合計 ${total>=0?'+':''}${Math.round(total).toLocaleString()} 元`);
+    renderTable();
+    toast(`已匯入 ${importedCount} 筆，已跳過 ${skippedCount} 筆重複`);
   };
   input.click();
+}
+
+function calcTotalRealizedPnl(market) {
+  const isUS = market === 'us';
+  const posList = positions.filter(p => isUS ? isUSPos(p) : isTWPos(p));
+  let total = 0;
+  for (const pos of posList) {
+    let sh = 0, avgCost = 0;
+    const txs = [...(pos.transactions || [])].sort((a,b) => a.date.localeCompare(b.date));
+    for (const tx of txs) {
+      if (tx.action === 'buy') {
+        const ns = sh + tx.shares;
+        avgCost = ns > 0 ? (sh * avgCost + tx.shares * tx.price) / ns : tx.price;
+        sh = ns;
+      } else {
+        total += (tx.price - avgCost) * tx.shares;
+        sh = Math.max(0, sh - tx.shares);
+      }
+    }
+  }
+  return Math.round(total);
+}
+
+function updateRealizedDisplay() {
+  const twInput = document.getElementById('realizedPnlInput');
+  const usInput = document.getElementById('realizedPnlUSInput');
+  if (twInput) twInput.value = calcTotalRealizedPnl('tw') || '';
+  if (usInput) usInput.value = calcTotalRealizedPnl('us') || '';
 }
 
 function toast(msg, type='ok') {
@@ -1775,6 +1848,7 @@ function saveTx() {
   recalcFromTransactions(idx);
   _ytdCache={};  // 持倉異動，清除 YTD cache
   saveState();
+  updateRealizedDisplay();
   hideTxModal();
   showDetailModal(txTargetId);
   renderTable();
@@ -2437,8 +2511,6 @@ async function fetchAndRenderYTD(){
       return v;
     }
 
-    const dec31Base = subPeriods[0].startValue; // Dec 31 portfolio value (denominator for realized P&L spread)
-
     const rawSeries = benchDates.map(date => {
       // Find which sub-period contains this date
       let pidx = boundaries.length - 1;
@@ -2464,13 +2536,6 @@ async function fetchAndRenderYTD(){
       return (chain * (val / cur.startValue) - 1) * 100;
     });
 
-    // Spread realized P&L (from manual input or CSV import) evenly across trading days
-    const realizedKey = isUS ? 'realized_pnl_us_v1' : 'realized_pnl_v1';
-    const realizedPnl = parseFloat(localStorage.getItem(realizedKey) || '0') || 0;
-    if (realizedPnl && dec31Base > 0) {
-      const n = rawSeries.length;
-      return rawSeries.map((v, i) => v === null ? null : v + (realizedPnl / dec31Base * 100 * (i + 1) / n));
-    }
     return rawSeries;
   }
 
@@ -2583,12 +2648,11 @@ async function fetchAndRenderYTD(){
 // ════════════════════════════════════════════════
 // NET WORTH VIEW
 // ════════════════════════════════════════════════
-const _YTD_CODE_VER = 3; // bump to bust stale in-memory cache after algorithm changes
+const _YTD_CODE_VER = 4; // bump to bust stale in-memory cache after algorithm changes
 function ytdCacheKey(market){
   const pos=positions.filter(p=>market==='tw'?isTWPos(p):isUSPos(p));
   const hash=pos.map(p=>p.stockCode+':'+p.shares).sort().join('|');
-  const realized=localStorage.getItem(market==='tw'?'realized_pnl_v1':'realized_pnl_us_v1')||'0';
-  return market+'_'+todayStr()+'_v'+_YTD_CODE_VER+'_r'+realized+'_'+hash;
+  return market+'_'+todayStr()+'_v'+_YTD_CODE_VER+'_'+hash;
 }
 
 // ── 回傳指定日期當天實際持有的股數 ──
@@ -2955,10 +3019,7 @@ async function prefetchYTDCache(){
 
 window.onload=()=>{
   loadState();
-  const savedRPnl=localStorage.getItem('realized_pnl_v1');
-  if(savedRPnl) document.getElementById('realizedPnlInput').value=savedRPnl;
-  const savedRPnlUS=localStorage.getItem('realized_pnl_us_v1');
-  if(savedRPnlUS) document.getElementById('realizedPnlUSInput').value=savedRPnlUS;
+  updateRealizedDisplay();
   fetchUSDTWDRate().then(r=>{ if(r) usdTwdRate=r; render(); });
   render();
   setLastUpdated();
