@@ -2129,6 +2129,7 @@ async function fetchWithProxy(url){
     url,
     `https://corsproxy.io/?${encodeURIComponent(url)}`,
     `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   ];
   for(const u of proxies){
     try{
@@ -2184,13 +2185,19 @@ async function fetchYahooPrice(ticker){
   const key=`yahoo_${ticker}_${todayStr()}`;
   const c=sessionStorage.getItem(key); if(c) return JSON.parse(c);
   const bases=[
+    `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?range=5d&interval=1d`,
+    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=5d&interval=1d`,
     `https://query2.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
     `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`,
-    `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
-    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?range=2d&interval=1d`,
+  ];
+  const proxify=u=>[
+    u,
+    `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
   for(const base of bases){
-    for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`]){
+    for(const u of proxify(base)){
       const d=await fetchJSON(u);
       if(!d) continue;
       const q=d?.quoteResponse?.result?.[0];
@@ -2253,8 +2260,14 @@ async function fetchStockDayChange(code,market){
       `https://query2.finance.yahoo.com/v8/finance/chart/${code}?range=5d&interval=1d`,
       `https://query1.finance.yahoo.com/v8/finance/chart/${code}?range=5d&interval=1d`,
     ];
+    const proxify=u=>[
+      u,
+      `https://corsproxy.io/?${encodeURIComponent(u)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    ];
     for(const base of bases){
-      for(const u of [base,`https://corsproxy.io/?${encodeURIComponent(base)}`,`https://api.allorigins.win/raw?url=${encodeURIComponent(base)}`]){
+      for(const u of proxify(base)){
         try{
           const d=await fetchJSON(u); if(!d) continue;
           const res=d?.chart?.result?.[0];
@@ -2272,9 +2285,15 @@ async function fetchStockDayChange(code,market){
         }catch(e){}
       }
     }
+    // 備用：fetchYahooPrice（已含多 proxy 邏輯）
+    const yf=await fetchYahooPrice(code);
+    if(yf?.price>0){
+      const r={price:yf.price,change:yf.change??null,date:todayStr()};
+      sessionStorage.setItem(key,JSON.stringify(r)); return r;
+    }
     return null;
   }
-  // ── 台股 TSE/OTC：TWSE STOCK_DAY 月度資料最後2筆 ──
+  // ── 台股 TSE/OTC：TWSE/TPEX 月度資料最後2筆，OTC 備用 Yahoo Finance ──
   const cacheKey=`daily2_${code}_${todayStr()}`;
   const cached=sessionStorage.getItem(cacheKey);
   if(cached) return JSON.parse(cached);
@@ -2290,13 +2309,23 @@ async function fetchStockDayChange(code,market){
       :await fetchTWSEMonthly(code,pyr,pmo);
     rows=[...prev,...rows];
   }
-  if(!rows.length) return null;
-  const last=rows[rows.length-1];
-  const prev=rows.length>=2?rows[rows.length-2]:null;
-  const change=prev&&prev.close>0?(last.close-prev.close)/prev.close*100:null;
-  const result={price:last.close,change,date:last.date};
-  sessionStorage.setItem(cacheKey,JSON.stringify(result));
-  return result;
+  if(rows.length){
+    const last=rows[rows.length-1];
+    const prev=rows.length>=2?rows[rows.length-2]:null;
+    const change=prev&&prev.close>0?(last.close-prev.close)/prev.close*100:null;
+    const result={price:last.close,change,date:last.date};
+    sessionStorage.setItem(cacheKey,JSON.stringify(result));
+    return result;
+  }
+  // ── 備用：Yahoo Finance（OTC → .TWO；TSE → .TW）──
+  const suffix=market==='otc'?'.TWO':'.TW';
+  const yf=await fetchYahooPrice(code+suffix);
+  if(yf?.price>0){
+    const result={price:yf.price,change:yf.change??null,date:todayStr()};
+    sessionStorage.setItem(cacheKey,JSON.stringify(result));
+    return result;
+  }
+  return null;
 }
 
 async function fetchAndRenderDaily(){
